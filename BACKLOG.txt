@@ -1,0 +1,19 @@
+============================================================
+ IDEEN FUER SPAETER (vom Owner "merken" markiert)
+============================================================
+
+Diese Punkte wurden besprochen, aber bewusst noch NICHT gebaut.
+Bei Gelegenheit wieder ansprechen.
+
+- Uebersetzen per Rechtsklick auf eine Nachricht (DE <-> EN <-> JP).
+  Braucht einen Uebersetzungsdienst, z.B. DeepL (kostenloser API-Key).
+
+- "Nachricht melden" per Rechtsklick -> Meldung mit Link an den Staff.
+  ("noch nicht")
+
+- Zweisprachiger Bot (Deutsch/Englisch je nach Sprachrolle des Users).
+  Vorerst bleibt alles auf Englisch.
+
+- Bekannte Probleme der eigenen Mods fuer den Crash-Analyzer
+  (z.B. "SmiteMod 1.0 crasht mit Mod X -> auf 1.1 updaten"),
+  pflegbar per Befehl / Web-Panel. ("fuer die Zukunft vielleicht")

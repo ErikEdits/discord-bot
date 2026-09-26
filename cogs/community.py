@@ -15,6 +15,8 @@
 
 import json
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +63,32 @@ def _save_faqs(data: dict) -> None:
 
 def _guild_faqs(guild_id: int) -> dict:
     return _load_faqs().get(str(guild_id), {})
+
+
+QUESTION_START = re.compile(
+    r"^(how|why|where|what|when|which|can|could|does|do|is|are|anyone|help|"
+    r"wie|wo|warum|was|wann|welche|kann|geht|gibt|hat|hilfe)\b", re.IGNORECASE)
+
+
+def parse_keywords(text: str | None) -> list[str]:
+    return [k.strip().lower() for k in (text or "").split(",") if len(k.strip()) >= 3][:20]
+
+
+def match_faq(content: str, faqs: dict) -> str | None:
+    """Return the FAQ name whose name/keywords match a question best, or None."""
+    text = content.lower()
+    if "?" not in text and not QUESTION_START.search(text.strip()):
+        return None
+    best, best_score = None, 0
+    for name, entry in faqs.items():
+        triggers = {name.replace("-", " ").replace("_", " ")} | set(entry.get("keywords", []))
+        score = 0
+        for trigger in triggers:
+            if len(trigger) >= 3 and re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", text):
+                score += 1 + trigger.count(" ")  # multi-word keywords count more
+        if score > best_score:
+            best, best_score = name, score
+    return best
 
 
 def _suggestions_config() -> dict:
@@ -173,6 +201,7 @@ class Community(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         bot.add_view(SuggestionStatusView())
+        self._faq_cooldown: dict = {}
 
     # ---------- FAQ ----------
 
@@ -209,9 +238,10 @@ class Community(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @faq_group.command(name="add", description="Add or update a FAQ answer (admin).")
-    @app_commands.describe(name="Short key, e.g. install", answer="The answer text")
+    @app_commands.describe(name="Short key, e.g. install", answer="The answer text",
+                           keywords="Optional, comma-separated: words that make the bot suggest this FAQ automatically")
     @app_commands.default_permissions(administrator=True)
-    async def faq_add(self, interaction: discord.Interaction, name: str, answer: str):
+    async def faq_add(self, interaction: discord.Interaction, name: str, answer: str, keywords: str | None = None):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
@@ -219,6 +249,7 @@ class Community(commands.Cog):
         g = str(interaction.guild_id)
         data.setdefault(g, {})[name.lower()] = {
             "answer": answer,
+            "keywords": parse_keywords(keywords),
             "added_by": str(interaction.user),
             "ts": datetime.now(timezone.utc).isoformat(),
         }
@@ -254,6 +285,43 @@ class Community(commands.Cog):
         )
         embed.set_footer(text="Show one with /faq show")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ---------- Automatic FAQ suggestions ----------
+
+    @commands.Cog.listener("on_message")
+    async def suggest_faq(self, message: discord.Message):
+        cfg = SERVER_TEMPLATE.get("faq_suggestions", {})
+        if not cfg.get("enabled", True) or message.guild is None or message.author.bot:
+            return
+        channel = message.channel
+        channel_name = getattr(getattr(channel, "parent", None), "name", None) if isinstance(channel, discord.Thread) else channel.name
+        if channel_name not in set(cfg.get("channels", [])):
+            return
+        if isinstance(message.author, discord.Member) and message.author.guild_permissions.manage_messages:
+            return  # staff answers themselves
+        faqs = _guild_faqs(message.guild.id)
+        if not faqs:
+            return
+        name = match_faq(message.content or "", faqs)
+        if name is None:
+            return
+        now = time.monotonic()
+        cooldown = float(cfg.get("cooldown_minutes", 10)) * 60
+        key = (channel.id, name)
+        if now - self._faq_cooldown.get(key, 0) < cooldown or now - self._faq_cooldown.get(("user", message.author.id), 0) < 120:
+            return
+        self._faq_cooldown[key] = now
+        self._faq_cooldown[("user", message.author.id)] = now
+        embed = discord.Embed(
+            title=f"\U0001F4A1 This might help: {name}",
+            description=faqs[name]["answer"][:4000],
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"Automatic suggestion \u00b7 /faq show {name}")
+        try:
+            await message.reply(embed=embed, mention_author=False)
+        except discord.HTTPException:
+            pass
 
     # ---------- Announce ----------
 

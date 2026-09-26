@@ -4,11 +4,24 @@
 <div class="login-box">
     <h1>Bot Panel</h1>
     {% if error == "wrong_password" %}<div class="error">Wrong password.</div>{% endif %}
-    {% if error == "panel_disabled" %}<div class="error">Panel password not configured.</div>{% endif %}
+    {% if error == "password_disabled" %}<div class="error">Password login is turned off - use Discord.</div>{% endif %}
+    {% if error == "not_admin" %}<div class="error">You need the Administrator permission on the Discord server.</div>{% endif %}
+    {% if error == "oauth_failed" %}<div class="error">Discord login failed. Please try again.</div>{% endif %}
+    {% if error == "oauth_unavailable" %}<div class="error">Discord login isn't ready yet (bot still starting?).</div>{% endif %}
+    {% if oauth_enabled %}
+    <a href="/login/discord"><button type="button" class="discord-login">Login with Discord</button></a>
+    <p class="muted" style="font-size: 12px; margin-top: 10px">Only members with the Administrator permission on the server can log in.</p>
+    {% endif %}
+    {% if password_login %}
+    {% if oauth_enabled %}<hr style="border: 0; border-top: 1px solid var(--border); margin: 18px 0">{% endif %}
     <form method="post" action="/login">
         <label for="password">Password</label>
-        <input type="password" name="password" id="password" autofocus required>
+        <input type="password" name="password" id="password" {% if not oauth_enabled %}autofocus{% endif %} required>
         <button type="submit">Sign in</button>
     </form>
+    {% endif %}
+    {% if not oauth_enabled and not password_login %}
+    <div class="error">No login method configured. Set DISCORD_CLIENT_SECRET or PANEL_PASSWORD in .env.</div>
+    {% endif %}
 </div>
 {% endblock %}

@@ -521,6 +521,14 @@ class Modrinth(commands.Cog):
                 except Exception:
                     log.exception("Failed to post Modrinth release")
 
+        # Follow-ups: feedback poll a few days later + refresh the compatibility table.
+        try:
+            from cogs.mod_info import schedule_release_feedback
+            for project, version in new_versions:
+                schedule_release_feedback(project, version)
+        except Exception:
+            log.exception("Failed to schedule release follow-ups")
+
     @poll_loop.before_loop
     async def _before(self):
         await self.bot.wait_until_ready()

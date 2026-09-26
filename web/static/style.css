@@ -220,3 +220,6 @@ select { cursor: pointer; }
 .pill.off { background: rgba(35,165,90,0.2); color: var(--success); }
 .faq-answer { white-space: pre-wrap; color: var(--muted); max-width: 640px; }
 td form { display: inline; }
+
+.discord-login { width: 100%; padding: 12px; background: #5865f2; font-weight: 600; }
+.discord-login:hover { background: #4752c4; }

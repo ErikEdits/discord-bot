@@ -7,13 +7,20 @@ roles (SERVER_TEMPLATE["levels"]["level_roles"]) are handed out automatically.
 
 XP needed from level L to L+1: 5*L^2 + 50*L + 100 (same curve as most level bots).
 
+Voice: members also earn `voice_xp_per_minute` XP for every minute in a voice
+channel with at least one other person (not self-muted/deafened, not in the
+AFK channel).
+
     /rank [member]        level, XP and rank
+    /profile [member]     profile card image
     /leaderboard          top 10
     /xp set / /xp reset   (administrator)
 
 XP is kept in memory and written to data/levels.json once a minute.
 """
 
+import asyncio
+import io
 import logging
 import random
 import time
@@ -68,10 +75,14 @@ class Levels(commands.Cog):
         self.dirty = False
         self.cooldowns: dict[tuple[int, int], float] = {}
         self.flush_loop.start()
+        if int(_config().get("voice_xp_per_minute", 0)) > 0:
+            self.voice_loop.start()
 
     def cog_unload(self):
         if self.flush_loop.is_running():
             self.flush_loop.cancel()
+        if self.voice_loop.is_running():
+            self.voice_loop.cancel()
         self._flush()
 
     def _flush(self) -> None:
@@ -155,16 +166,45 @@ class Levels(commands.Cog):
             self.cooldowns = {k: v for k, v in self.cooldowns.items() if v > cutoff}
 
         entry = self._entry(message.guild.id, message.author.id)
-        old_level = level_from_xp(entry["xp"])
-        entry["xp"] += random.randint(int(cfg.get("xp_min", 15)), int(cfg.get("xp_max", 25)))
         entry["messages"] = entry.get("messages", 0) + 1
-        entry["name"] = str(message.author)
+        await self.add_xp(message.author, random.randint(int(cfg.get("xp_min", 15)), int(cfg.get("xp_max", 25))))
+
+    async def add_xp(self, member: discord.Member, amount: int) -> None:
+        entry = self._entry(member.guild.id, member.id)
+        old_level = level_from_xp(entry["xp"])
+        entry["xp"] += amount
+        entry["name"] = str(member)
         self.dirty = True
         new_level = level_from_xp(entry["xp"])
         if new_level > old_level:
-            log.info("%s reached level %d", message.author, new_level)
-            await self._apply_level_roles(message.author, new_level)
-            await self._announce(message.author, new_level)
+            log.info("%s reached level %d", member, new_level)
+            await self._apply_level_roles(member, new_level)
+            await self._announce(member, new_level)
+
+    @tasks.loop(seconds=60)
+    async def voice_loop(self):
+        if not _config().get("enabled", True):
+            return
+        per_minute = int(_config().get("voice_xp_per_minute", 0))
+        hub = CHANNELS.get("create_vc")
+        for guild in self.bot.guilds:
+            for channel in list(guild.voice_channels) + list(guild.stage_channels):
+                if channel == guild.afk_channel or channel.name == hub:
+                    continue
+                humans = [m for m in channel.members if not m.bot]
+                if len(humans) < 2:
+                    continue
+                for member in humans:
+                    vs = member.voice
+                    if vs is None or vs.self_mute or vs.self_deaf or vs.mute or vs.deaf:
+                        continue
+                    entry = self._entry(guild.id, member.id)
+                    entry["voice_minutes"] = entry.get("voice_minutes", 0) + 1
+                    await self.add_xp(member, per_minute)
+
+    @voice_loop.before_loop
+    async def _before_voice(self):
+        await self.bot.wait_until_ready()
 
     # -------- Commands ----------------------------------------------------
 
@@ -189,6 +229,31 @@ class Levels(commands.Cog):
         embed.add_field(name=f"Progress to level {level + 1}",
                         value=f"`{_progress_bar(into, needed)}` {into:,} / {needed:,} XP", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="profile", description="Show a profile card (yours or someone else's).")
+    @app_commands.guild_only()
+    async def profile(self, interaction: discord.Interaction, member: discord.Member | None = None):
+        from cogs.profile_card import render_profile
+        member = member or interaction.user
+        await interaction.response.defer(thinking=True)
+        entry = self.data.get(str(interaction.guild_id), {}).get(str(member.id), {})
+        xp = entry.get("xp", 0)
+        level = level_from_xp(xp)
+        position = next((i for i, (uid, _) in enumerate(self._ranked(interaction.guild_id), 1)
+                         if uid == str(member.id)), None) if entry else None
+        badges = [(r.name, r.color.value) for r in reversed(member.roles[1:]) if r.hoist or r.name.startswith("Level ")][:3]
+        try:
+            avatar = await member.display_avatar.replace(size=256, format="png").read()
+        except (discord.HTTPException, ValueError):
+            avatar = None
+        joined = member.joined_at.strftime("%d %b %Y") if member.joined_at else "-"
+        accent = member.color.value if member.color.value else 0x5865F2
+        png = await asyncio.to_thread(
+            render_profile, avatar, member.display_name, member.name, accent, level,
+            xp - total_xp_for_level(level), xp_for_next(level), position, xp,
+            entry.get("messages", 0), entry.get("voice_minutes", 0), joined, badges,
+        )
+        await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="profile.png"))
 
     @app_commands.command(name="leaderboard", description="Show the top 10 members by XP.")
     @app_commands.guild_only()

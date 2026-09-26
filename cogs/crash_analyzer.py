@@ -103,8 +103,8 @@ class CrashChannelView(discord.ui.View):
     @discord.ui.button(label="Still broken? Open a ticket", emoji="\U0001F3AB",
                        style=discord.ButtonStyle.secondary, custom_id="crash:ticket")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from cogs.tickets import _open_ticket
-        await _open_ticket(interaction, "bug")
+        from cogs.tickets import start_ticket
+        await start_ticket(interaction, "bug")
 
     @discord.ui.button(label="Close", emoji="\U0001F512",
                        style=discord.ButtonStyle.danger, custom_id="crash:close")

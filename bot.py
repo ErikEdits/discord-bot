@@ -27,6 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("setup-bot")
 
 from server_template import SERVER_TEMPLATE, CHANNELS
+from cogs.role_panel import ReactionRolesView, build_panel as build_role_panel, get_panel_config
 from web import log_buffer
 from web.app import app as panel_app, set_bot as set_panel_bot
 
@@ -76,13 +77,6 @@ CONTENT_FILTERS = {
     "all_members": discord.ContentFilter.all_members,
 }
 
-BUTTON_STYLES = {
-    "primary": discord.ButtonStyle.primary,
-    "secondary": discord.ButtonStyle.secondary,
-    "success": discord.ButtonStyle.success,
-    "danger": discord.ButtonStyle.danger,
-}
-
 VALID_AUTOMOD_PRESETS = {"profanity", "sexual_content", "slurs"}
 
 
@@ -100,60 +94,6 @@ intents.members = True  # Required for member join/leave/update events. Enable S
 # start; set MESSAGE_CONTENT_INTENT=false in .env to boot without it.
 intents.message_content = os.getenv("MESSAGE_CONTENT_INTENT", "true").lower() in ("1", "true", "yes")
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-
-
-class RoleToggleButton(discord.ui.Button):
-    def __init__(self, role_name, label, emoji, style, row):
-        super().__init__(
-            label=label,
-            emoji=emoji,
-            style=style,
-            custom_id=f"rr:{role_name}",
-            row=row,
-        )
-        self.role_name = role_name
-
-    async def callback(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Not in a server.", ephemeral=True)
-            return
-        role = discord.utils.get(guild.roles, name=self.role_name)
-        if role is None:
-            await interaction.response.send_message(
-                f"Role `{self.role_name}` is missing. Ask an admin to re-run `/setup`.",
-                ephemeral=True,
-            )
-            return
-        member = interaction.user if isinstance(interaction.user, discord.Member) else guild.get_member(interaction.user.id)
-        if member is None:
-            await interaction.response.send_message("Could not resolve your member object.", ephemeral=True)
-            return
-        try:
-            if role in member.roles:
-                await member.remove_roles(role, reason="Self-assign panel")
-                await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
-            else:
-                await member.add_roles(role, reason="Self-assign panel")
-                await interaction.response.send_message(f"Added **{role.name}**.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "I can't change that role - my role is below it in the hierarchy.",
-                ephemeral=True,
-            )
-
-
-class ReactionRolesView(discord.ui.View):
-    def __init__(self, buttons_def):
-        super().__init__(timeout=None)
-        for b in buttons_def:
-            self.add_item(RoleToggleButton(
-                role_name=b["role"],
-                label=b["label"],
-                emoji=b.get("emoji"),
-                style=BUTTON_STYLES.get(b.get("style", "secondary"), discord.ButtonStyle.secondary),
-                row=b.get("row", 0),
-            ))
 
 
 class RulesAcceptView(discord.ui.View):
@@ -209,6 +149,7 @@ class RulesAcceptButton(discord.ui.Button):
 
 if LOW_POWER:
     EXTENSIONS = (
+        "cogs.error_alerts",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -223,11 +164,18 @@ if LOW_POWER:
         "cogs.scheduler",
         "cogs.roadmap",
         "cogs.temp_voice",
+        "cogs.countdown",
+        "cogs.counting",
+        "cogs.afk",
+        "cogs.tips",
+        "cogs.staff_list",
+        "cogs.invites",
     )
     log.info("LOW_POWER mode: skipping logging, anti-spam, link filter, modrinth, mod stats, welcome DM, "
              "welcome image, crash analyzer, levels, stats and member counter (background-heavy)")
 else:
     EXTENSIONS = (
+        "cogs.error_alerts",  # first, so it also reports errors while the others load
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -253,6 +201,14 @@ else:
         "cogs.roadmap",
         "cogs.temp_voice",
         "cogs.welcome_image",
+        "cogs.mod_info",
+        "cogs.countdown",
+        "cogs.counting",
+        "cogs.tips",
+        "cogs.afk",
+        "cogs.invites",
+        "cogs.auto_slowmode",
+        "cogs.staff_list",
     )
 
 
@@ -276,7 +232,7 @@ async def _start_web_panel():
 
 
 async def _setup_hook():
-    panel = SERVER_TEMPLATE.get("reaction_role_panel")
+    panel = get_panel_config()  # web-panel edits (data/role_panel.json) win over the template
     if panel and panel.get("buttons"):
         bot.add_view(ReactionRolesView(panel["buttons"]))
         log.info("Registered persistent reaction-role view")
@@ -867,15 +823,7 @@ async def configure_welcome_screen(guild, template):
 
 
 def build_roles_panel(template):
-    panel = template.get("reaction_role_panel")
-    if not panel or not panel.get("buttons"):
-        return None, None
-    embed = discord.Embed(
-        title=panel.get("title", "Self-Assign Roles"),
-        description=panel.get("description", ""),
-        color=0x5865F2,
-    )
-    return embed, ReactionRolesView(panel["buttons"])
+    return build_role_panel()
 
 
 def build_ticket_panel(template):
@@ -1019,7 +967,7 @@ async def post_ticket_panel(guild, template, bot_user):
 
 
 async def post_reaction_role_panel(guild, template, bot_user):
-    panel = template.get("reaction_role_panel")
+    panel = get_panel_config()
     if not panel or not panel.get("buttons"):
         return False
     channel_name = panel["channel"]

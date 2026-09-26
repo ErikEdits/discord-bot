@@ -1,4 +1,93 @@
 ============================================================
+ BOT UPDATE 3 - 19 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) data-Ordner und .env behalten, Bot neu starten.
+2) In Discord /update ausfuehren. Das legt an:
+   - #🧩-compatibility  (Info-Bereich) - Kompatibilitaets-Tabelle
+   - #👮-staff-team     (Info-Bereich) - Team-Liste
+   - #🔢-counting       (Community)   - Zaehl-Channel
+3) Discord-Login fuers Web-Panel einrichten (empfohlen):
+   a) discord.com/developers -> deine App -> OAuth2
+      - "Client Secret" kopieren (Reset Secret, falls noetig)
+      - bei "Redirects" eintragen:  <Panel-Adresse>/oauth/callback
+        z.B.  http://localhost:8080/oauth/callback
+   b) in die .env:
+        DISCORD_CLIENT_SECRET=<das Secret>
+        PANEL_PUBLIC_URL=http://localhost:8080   (Adresse, mit der du das Panel oeffnest)
+   c) Bot neu starten -> auf der Login-Seite gibt es "Login with Discord".
+      Rein kommt NUR, wer auf dem Server die Administrator-Berechtigung
+      hat. Das wird bei jedem Seitenaufruf neu geprueft - wer die
+      Berechtigung verliert, fliegt sofort raus.
+      Das Passwort-Login ist dann aus (PANEL_ALLOW_PASSWORD=true
+      schaltet es zusaetzlich wieder an).
+4) Die Bot-Rolle braucht "Server verwalten" (fuer Invite-Tracking)
+   und "Audit-Log anzeigen" (wer hat Rollen geaendert). Mit
+   Administrator-Recht hat er beides.
+
+
+WAS IST NEU
+-----------
+ 1. /mod <name>          Infokarte: Beschreibung, Versionen je Loader,
+                         Downloads, Links
+ 2. /changelog <mod>     Changelogs der letzten Versionen
+ 3. KOMPATIBILITAETS-TABELLE in #🧩-compatibility, aktualisiert sich
+    alle 6h und nach jedem Release selbst (/compatibility-refresh)
+ 4. DOWNLOAD-MEILENSTEINE (100, 1K, 10K, ...) werden in #📈-mod-stats
+    gefeiert
+ 5. COUNTDOWN: /countdown create titel wann [channel] [text] [ping]
+    zaehlt live runter, am Ende "Out now!" + Ping. /countdown list/delete
+ 6. FEEDBACK NACH RELEASES: 3 Tage nach einer neuen Version postet der
+    Bot automatisch eine Umfrage "Wie laeuft Version X?"
+ 7. BUG-FORMULAR: vor einem Bug-Ticket fragt ein Formular Mod+Version,
+    MC-Version+Loader, was passiert ist, Schritte, Crash-Log-Link ab
+ 8. AUTOMATISCHE FAQ-VORSCHLAEGE: fragt jemand in general/mod-support/
+    bot-commands/off-topic etwas, das zu einer FAQ passt, antwortet der
+    Bot mit der FAQ. Stichwoerter: /faq add ... keywords:install,download
+    (oder im Web-Panel). Staff wird nicht beantwortet.
+11. ZAEHL-CHANNEL #🔢-counting: gemeinsam hochzaehlen, nicht zweimal
+    hintereinander, falsche Zahl = zurueck auf 0. /counting (Stand),
+    /counting-set (Admin)
+12. "WUSSTEST DU?" jeden Tag um 17 Uhr in #💬-general.
+    /tip add, /tip remove, /tip list, /tip post (Admin)
+14. /afk [grund]  - wer dich erwaehnt, bekommt eine Notiz. Endet mit
+    deiner naechsten Nachricht.
+15. /profile [user] - Profilkarte als Bild (Level, Rang, XP,
+    Nachrichten, Voice-Zeit, Beitritt, Rollen)
+16. VOICE-XP: 4 XP pro Minute im Voice mit mind. einer anderen Person
+    (nicht selbst stumm/taub, nicht im AFK-Channel)
+17. INVITE-TRACKING: /invites leaderboard, /invites user @user
+    -> NUR fuer Admins sichtbar
+22. AUTO-SLOWMODE in general, off-topic, memes, media, introductions,
+    art, suggestions: je mehr los ist, desto laenger:
+      20 Nachrichten/Min -> 5s, 35 -> 10s, 50 -> 15s, 80 -> 30s
+    Wird schrittweise wieder runtergesetzt, wenn es 3 Min ruhiger ist.
+    Nie unter den normalen Slowmode des Channels. Log in #mod-logs.
+24. TEAM-LISTE in #👮-staff-team (Owner/Admin/Moderator), aktualisiert
+    sich selbst
+25. ROLLEN-AENDERUNGEN in #🗄-server-logs: welche Berechtigungen dazu/
+    weg, Name, Farbe - und WER es war. Auch bei Rollen-Vergabe an
+    Mitglieder steht jetzt dabei, wer sie gegeben hat.
+26. WEB-PANEL LOGIN MIT DISCORD (siehe oben)
+27. EMBED-BAUKASTEN im Web-Panel ("Embeds"): Titel, Text, Farbe,
+    Bilder, Felder, Link-Buttons, Live-Vorschau. Auch bestehende
+    Bot-Nachrichten per Link laden und bearbeiten.
+28. ROLLEN-PANEL im Web-Panel bearbeiten ("Role panel"): Buttons
+    hinzufuegen/entfernen/sortieren, Text aendern - geht sofort live.
+    Rollen mit gefaehrlichen Rechten (Admin, Bannen, Verwalten...)
+    koennen dort NICHT hinzugefuegt werden.
+29. FEHLER-ALARM: Fehler im Bot kommen per DM an alle mit
+    Administrator-Berechtigung (gebuendelt, gleicher Fehler max. alle
+    30 Min). /error-alerts off|on|test
+
+Gemerkt fuer spaeter (siehe BACKLOG.txt): Uebersetzen per Rechtsklick,
+"Nachricht melden", zweisprachiger Bot, bekannte Probleme im
+Crash-Analyzer.
+
+
+============================================================
  BOT UPDATE 2 - 7 neue Features
 ============================================================
 

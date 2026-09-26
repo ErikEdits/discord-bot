@@ -19,6 +19,10 @@
             </div>
         </div>
         <div>
+            <label for="keywords">Keywords for automatic suggestions (optional, comma-separated)</label>
+            <input type="text" name="keywords" id="keywords" maxlength="500" placeholder="e.g. install, download, how to use">
+        </div>
+        <div>
             <label for="answer">Answer</label>
             <textarea name="answer" id="answer" maxlength="4000" required></textarea>
         </div>
@@ -38,7 +42,7 @@
         <tbody>
         {% for key, entry in block.faqs %}
             <tr>
-                <td><code>{{ key }}</code></td>
+                <td><code>{{ key }}</code>{% if entry.keywords %}<div class="muted" style="font-size: 12px">{{ entry.keywords | join(", ") }}</div>{% endif %}</td>
                 <td class="faq-answer">{{ entry.answer }}</td>
                 <td>
                     <form method="post" action="/faqs/delete">

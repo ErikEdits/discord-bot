@@ -286,7 +286,64 @@ class RateButton(discord.ui.DynamicItem[discord.ui.Button],
         log.info("Ticket %s rated %d/5 by %s", self.ticket_name, self.stars, interaction.user)
 
 
-async def _open_ticket(interaction: discord.Interaction, type_key: str) -> None:
+def _existing_ticket(guild: discord.Guild, user_id: int) -> discord.TextChannel | None:
+    category = discord.utils.get(guild.categories, name=_category_name())
+    if category is None:
+        return None
+    return discord.utils.find(
+        lambda c: c.category_id == category.id and _parse_topic(c)[0] == user_id,
+        guild.text_channels,
+    )
+
+
+class TicketFormModal(discord.ui.Modal):
+    """Questions asked before a ticket opens (the "form" of a ticket type)."""
+
+    def __init__(self, type_def: dict):
+        super().__init__(title=f"{type_def['label']}"[:45])
+        self.type_key = type_def["key"]
+        self.inputs: list[tuple[str, discord.ui.TextInput]] = []
+        for field in type_def.get("form", [])[:5]:
+            text_input = discord.ui.TextInput(
+                label=field["label"][:45],
+                placeholder=(field.get("placeholder") or None),
+                style=discord.TextStyle.paragraph if field.get("style") == "long" else discord.TextStyle.short,
+                required=field.get("required", True),
+                max_length=min(int(field.get("max_length", 1000)), 4000),
+            )
+            self.inputs.append((field["label"], text_input))
+            self.add_item(text_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = [(label, i.value.strip()) for label, i in self.inputs if i.value and i.value.strip()]
+        await _open_ticket(interaction, self.type_key, answers)
+
+
+async def start_ticket(interaction: discord.Interaction, type_key: str) -> None:
+    """Entry point for the ticket buttons: checks first, then the form (if any), then the ticket."""
+    from cogs.maintenance import is_under_maintenance, get_maintenance_message
+    if is_under_maintenance("ticket"):
+        await interaction.response.send_message(f"\U0001F527 {get_maintenance_message('ticket')}", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    type_def = _ticket_type(type_key)
+    if type_def is None:
+        await interaction.response.send_message("Unknown ticket type.", ephemeral=True)
+        return
+    existing = _existing_ticket(interaction.guild, interaction.user.id)
+    if existing:
+        await interaction.response.send_message(f"You already have an open ticket: {existing.mention}", ephemeral=True)
+        return
+    if type_def.get("form"):
+        await interaction.response.send_modal(TicketFormModal(type_def))
+        return
+    await _open_ticket(interaction, type_key)
+
+
+async def _open_ticket(interaction: discord.Interaction, type_key: str,
+                       answers: list[tuple[str, str]] | None = None) -> None:
     from cogs.maintenance import is_under_maintenance, get_maintenance_message
     if is_under_maintenance("ticket"):
         await interaction.response.send_message(
@@ -370,6 +427,8 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str) -> None:
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
+    for label, value in answers or []:
+        embed.add_field(name=label[:256], value=value[:1024], inline=False)
     embed.set_footer(text="Use the Close Ticket button or /close when finished.")
     forward = type_key in _config().get("forward_types", ["bug"])
     try:
@@ -400,7 +459,7 @@ class OpenTicketButton(discord.ui.Button):
         self.type_key = type_def["key"]
 
     async def callback(self, interaction: discord.Interaction):
-        await _open_ticket(interaction, self.type_key)
+        await start_ticket(interaction, self.type_key)
 
 
 class TicketPanelView(discord.ui.View):

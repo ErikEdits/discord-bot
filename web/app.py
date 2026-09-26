@@ -1,6 +1,12 @@
 """FastAPI web panel for the Discord bot.
 
-Single-user auth via PANEL_PASSWORD env var. Cookie-based sessions stored in-memory.
+Login:
+- "Login with Discord" (OAuth2) when DISCORD_CLIENT_SECRET is set. Only people who
+  have the Administrator permission on a server the bot is in get in, and that is
+  re-checked against Discord on every request - lose the permission, lose access.
+- Password login (PANEL_PASSWORD) otherwise. When Discord login is configured the
+  password login is switched off unless PANEL_ALLOW_PASSWORD=true.
+Cookie-based sessions stored in-memory.
 Reads bot state directly from the in-process discord.py bot instance.
 """
 
@@ -8,12 +14,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 import discord
 import psutil
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
@@ -36,11 +44,23 @@ _jinja_env = Environment(
     auto_reload=True,
 )
 templates = Jinja2Templates(env=_jinja_env)
+_jinja_env.globals["panel_user"] = lambda request: _panel_user(request)
 app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "admin")
 SESSION_COOKIE = "panel_session"
-SESSIONS: set[str] = set()
+STATE_COOKIE = "panel_oauth_state"
+# token -> {"user_id": int | None, "name": str, "created": float}; user_id None = password login
+SESSIONS: dict[str, dict] = {}
+
+DISCORD_API = "https://discord.com/api/v10"
+OAUTH_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
+OAUTH_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "").strip()  # default: the bot's application ID
+PANEL_PUBLIC_URL = os.getenv("PANEL_PUBLIC_URL", "").strip().rstrip("/")
+OAUTH_ENABLED = bool(OAUTH_CLIENT_SECRET)
+PASSWORD_LOGIN = bool(PANEL_PASSWORD) and (
+    not OAUTH_ENABLED or os.getenv("PANEL_ALLOW_PASSWORD", "").lower() in ("1", "true", "yes")
+)
 
 _BOT: Optional[discord.Client] = None
 _START_TIME = time.time()
@@ -58,9 +78,58 @@ def current_bot() -> Optional[discord.Client]:
 
 # -------- Auth helpers ---------------------------------------------------
 
+def _discord_admin_guilds(user_id: int) -> list[discord.Guild]:
+    """Servers (shared with the bot) where this user has the Administrator permission."""
+    bot = current_bot()
+    if bot is None or not bot.is_ready():
+        return []
+    out = []
+    for guild in bot.guilds:
+        member = guild.get_member(user_id)
+        if member is not None and member.guild_permissions.administrator:
+            out.append(guild)
+    return out
+
+
 def _is_authed(request: Request) -> bool:
     token = request.cookies.get(SESSION_COOKIE)
-    return token is not None and token in SESSIONS
+    session = SESSIONS.get(token) if token else None
+    if session is None:
+        return False
+    if session.get("user_id") is None:
+        return PASSWORD_LOGIN  # password sessions die when password login gets switched off
+    if not _discord_admin_guilds(session["user_id"]):
+        SESSIONS.pop(token, None)  # admin permission gone -> logged out
+        log.info("Panel session of %s ended: no longer administrator", session.get("name"))
+        return False
+    return True
+
+
+def _panel_user(request: Request) -> Optional[str]:
+    token = request.cookies.get(SESSION_COOKIE)
+    session = SESSIONS.get(token) if token else None
+    return session.get("name") if session else None
+
+
+def _new_session(user_id: Optional[int], name: str) -> RedirectResponse:
+    token = secrets.token_urlsafe(32)
+    SESSIONS[token] = {"user_id": user_id, "name": name, "created": time.time()}
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=86400 * 7,
+                    secure=PANEL_PUBLIC_URL.startswith("https://"))
+    return resp
+
+
+def _redirect_uri(request: Request) -> str:
+    base = PANEL_PUBLIC_URL or str(request.base_url).rstrip("/")
+    return f"{base}/oauth/callback"
+
+
+def _client_id() -> str:
+    if OAUTH_CLIENT_ID:
+        return OAUTH_CLIENT_ID
+    bot = current_bot()
+    return str(bot.application_id) if bot and bot.application_id else ""
 
 
 def require_auth(request: Request):
@@ -248,27 +317,85 @@ async def login_page(request: Request, error: Optional[str] = None):
     return templates.TemplateResponse(request, "login.html", {
         "error": error,
         "authenticated": False,
+        "oauth_enabled": OAUTH_ENABLED,
+        "password_login": PASSWORD_LOGIN,
+        "redirect_uri": _redirect_uri(request),
     })
 
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
-    if not PANEL_PASSWORD:
-        return RedirectResponse("/login?error=panel_disabled", status_code=303)
+    if not PASSWORD_LOGIN:
+        return RedirectResponse("/login?error=password_disabled", status_code=303)
     if secrets.compare_digest(password, PANEL_PASSWORD):
-        token = secrets.token_urlsafe(32)
-        SESSIONS.add(token)
-        resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=86400 * 7)
-        return resp
+        log.info("Panel login with password")
+        return _new_session(None, "password login")
+    log.warning("Panel login with wrong password")
     return RedirectResponse("/login?error=wrong_password", status_code=303)
+
+
+@app.get("/login/discord")
+async def login_discord(request: Request):
+    if not OAUTH_ENABLED or not _client_id():
+        return RedirectResponse("/login?error=oauth_unavailable", status_code=303)
+    from urllib.parse import urlencode
+    state = secrets.token_urlsafe(24)
+    params = urlencode({
+        "client_id": _client_id(),
+        "response_type": "code",
+        "redirect_uri": _redirect_uri(request),
+        "scope": "identify",
+        "state": state,
+        "prompt": "none",
+    })
+    resp = RedirectResponse(f"https://discord.com/oauth2/authorize?{params}", status_code=303)
+    resp.set_cookie(STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600,
+                    secure=PANEL_PUBLIC_URL.startswith("https://"))
+    return resp
+
+
+@app.get("/oauth/callback")
+async def oauth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None,
+                         error: Optional[str] = None):
+    expected = request.cookies.get(STATE_COOKIE)
+    if error or not code or not state or not expected or not secrets.compare_digest(state, expected):
+        return RedirectResponse("/login?error=oauth_failed", status_code=303)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as http:
+            async with http.post(f"{DISCORD_API}/oauth2/token", data={
+                "client_id": _client_id(),
+                "client_secret": OAUTH_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _redirect_uri(request),
+            }) as r:
+                if r.status != 200:
+                    log.warning("Discord OAuth token exchange failed: HTTP %s", r.status)
+                    return RedirectResponse("/login?error=oauth_failed", status_code=303)
+                token = (await r.json()).get("access_token")
+            async with http.get(f"{DISCORD_API}/users/@me", headers={"Authorization": f"Bearer {token}"}) as r:
+                if r.status != 200:
+                    return RedirectResponse("/login?error=oauth_failed", status_code=303)
+                user = await r.json()
+    except aiohttp.ClientError:
+        log.exception("Discord OAuth request failed")
+        return RedirectResponse("/login?error=oauth_failed", status_code=303)
+    user_id = int(user["id"])
+    name = user.get("global_name") or user.get("username") or str(user_id)
+    if not _discord_admin_guilds(user_id):
+        log.warning("Panel login refused for %s (%s): not an administrator", name, user_id)
+        return RedirectResponse("/login?error=not_admin", status_code=303)
+    log.info("Panel login via Discord: %s (%s)", name, user_id)
+    resp = _new_session(user_id, name)
+    resp.delete_cookie(STATE_COOKIE)
+    return resp
 
 
 @app.post("/logout")
 async def logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        SESSIONS.discard(token)
+        SESSIONS.pop(token, None)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
@@ -428,7 +555,8 @@ async def faqs_page(request: Request):
 
 
 @app.post("/faqs/save")
-async def faqs_save(request: Request, guild_id: str = Form(...), name: str = Form(...), answer: str = Form(...)):
+async def faqs_save(request: Request, guild_id: str = Form(...), name: str = Form(...), answer: str = Form(...),
+                    keywords: str = Form("")):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=303)
     from cogs.community import _load_faqs, _save_faqs
@@ -439,8 +567,10 @@ async def faqs_save(request: Request, guild_id: str = Form(...), name: str = For
     if len(key) > 100 or len(answer) > 4000:
         return _redirect("/faqs", err="Name max. 100 and answer max. 4000 characters.")
     data = _load_faqs()
+    from cogs.community import parse_keywords
     data.setdefault(str(guild.id), {})[key] = {
         "answer": answer.strip(),
+        "keywords": parse_keywords(keywords),
         "added_by": "web panel",
         "ts": datetime.now(timezone.utc).isoformat(),
     }
@@ -732,3 +862,247 @@ async def api_stats(request: Request, guild: Optional[str] = None):
     if not _is_authed(request):
         raise HTTPException(401)
     return _stats_payload(guild)
+
+
+# -------- Routes: embed builder --------------------------------------------
+
+_MESSAGE_LINK = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
+
+
+def _http_url(value: str) -> Optional[str]:
+    value = (value or "").strip()
+    return value if value.startswith(("https://", "http://")) and len(value) <= 2000 else None
+
+
+def build_embed_message(payload: dict) -> tuple[Optional[str], Optional[discord.Embed], Optional[discord.ui.View]]:
+    """Turn the builder's JSON into content/embed/view. Raises ValueError with a readable message."""
+    content = (payload.get("content") or "").strip()[:2000] or None
+    e = payload.get("embed") or {}
+    embed = None
+    has_embed = any((e.get(k) or "").strip() for k in ("title", "description", "image", "thumbnail", "author", "footer")) \
+        or e.get("fields")
+    if has_embed:
+        color_text = (e.get("color") or "#5865f2").lstrip("#")
+        try:
+            color = int(color_text, 16)
+        except ValueError:
+            raise ValueError("Invalid color.")
+        embed = discord.Embed(
+            title=(e.get("title") or "").strip()[:256] or None,
+            description=(e.get("description") or "").strip()[:4096] or None,
+            color=color,
+            url=_http_url(e.get("url", "")) if (e.get("title") or "").strip() else None,
+            timestamp=datetime.now(timezone.utc) if e.get("timestamp") else None,
+        )
+        if (e.get("author") or "").strip():
+            embed.set_author(name=e["author"].strip()[:256], icon_url=_http_url(e.get("author_icon", "")))
+        if _http_url(e.get("thumbnail", "")):
+            embed.set_thumbnail(url=_http_url(e["thumbnail"]))
+        if _http_url(e.get("image", "")):
+            embed.set_image(url=_http_url(e["image"]))
+        if (e.get("footer") or "").strip():
+            embed.set_footer(text=e["footer"].strip()[:2048])
+        fields = e.get("fields") or []
+        if len(fields) > 25:
+            raise ValueError("Max. 25 fields.")
+        for f in fields:
+            name, value = (f.get("name") or "").strip(), (f.get("value") or "").strip()
+            if not name or not value:
+                raise ValueError("Every field needs a name and a value.")
+            embed.add_field(name=name[:256], value=value[:1024], inline=bool(f.get("inline")))
+        if len(embed) > 6000:
+            raise ValueError(f"The embed is too long ({len(embed)} of 6000 characters).")
+    buttons = payload.get("buttons") or []
+    view = None
+    if buttons:
+        if len(buttons) > 25:
+            raise ValueError("Max. 25 buttons.")
+        view = discord.ui.View(timeout=None)
+        for b in buttons:
+            url = _http_url(b.get("url", ""))
+            label = (b.get("label") or "").strip()[:80]
+            if not url or not label:
+                raise ValueError("Every button needs a label and an http(s) link.")
+            view.add_item(discord.ui.Button(label=label, url=url))
+    if not content and embed is None:
+        raise ValueError("The message is empty.")
+    return content, embed, view
+
+
+@app.get("/embeds", response_class=HTMLResponse)
+async def embeds_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    return _page(request, "embeds.html", channels=_writable_channels())
+
+
+@app.get("/api/embeds/load")
+async def embeds_load(request: Request, link: str):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    bot = current_bot()
+    m = _MESSAGE_LINK.search(link or "")
+    if not m or bot is None:
+        return JSONResponse({"error": "That's not a message link."}, status_code=400)
+    channel = bot.get_channel(int(m.group(2)))
+    if not isinstance(channel, discord.TextChannel):
+        return JSONResponse({"error": "Channel not found."}, status_code=404)
+    try:
+        message = await channel.fetch_message(int(m.group(3)))
+    except discord.HTTPException:
+        return JSONResponse({"error": "Message not found."}, status_code=404)
+    if message.author.id != bot.user.id:
+        return JSONResponse({"error": "Only messages sent by the bot can be edited."}, status_code=400)
+    e = message.embeds[0] if message.embeds else None
+    buttons = [{"label": c.label, "url": c.url} for row in message.components for c in getattr(row, "children", [])
+               if getattr(c, "url", None)]
+    return {
+        "channel_id": str(channel.id),
+        "content": message.content,
+        "embed": {
+            "title": e.title or "", "url": e.url or "", "description": e.description or "",
+            "color": f"#{e.color.value:06x}" if e and e.color else "#5865f2",
+            "author": e.author.name or "", "author_icon": e.author.icon_url or "",
+            "thumbnail": e.thumbnail.url or "", "image": e.image.url or "",
+            "footer": e.footer.text or "", "timestamp": bool(e.timestamp),
+            "fields": [{"name": f.name, "value": f.value, "inline": f.inline} for f in e.fields],
+        } if e else {},
+        "buttons": buttons,
+    }
+
+
+@app.post("/api/embeds/send")
+async def embeds_send(request: Request):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise HTTPException(415)
+    payload = await request.json()
+    bot = current_bot()
+    if bot is None or not bot.is_ready():
+        return JSONResponse({"error": "Bot not connected."}, status_code=503)
+    try:
+        content, embed, view = build_embed_message(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    edit_link = (payload.get("edit_link") or "").strip()
+    kwargs = {"content": content, "embed": embed, "allowed_mentions": discord.AllowedMentions.none()}
+    try:
+        if edit_link:
+            m = _MESSAGE_LINK.search(edit_link)
+            channel = bot.get_channel(int(m.group(2))) if m else None
+            if not isinstance(channel, discord.TextChannel):
+                return JSONResponse({"error": "Message to edit not found."}, status_code=404)
+            message = await channel.fetch_message(int(m.group(3)))
+            if message.author.id != bot.user.id:
+                return JSONResponse({"error": "Only messages sent by the bot can be edited."}, status_code=400)
+            kwargs.pop("allowed_mentions")
+            await message.edit(**kwargs, view=view)
+            log.info("Embed edited via panel in #%s", channel.name)
+            return {"ok": True, "text": f"Message in #{channel.name} updated.", "link": message.jump_url}
+        channel = bot.get_channel(int(payload.get("channel_id") or 0))
+        if not isinstance(channel, discord.TextChannel):
+            return JSONResponse({"error": "Pick a channel."}, status_code=400)
+        if view is not None:
+            kwargs["view"] = view
+        message = await channel.send(**kwargs)
+        log.info("Embed posted via panel in #%s", channel.name)
+        return {"ok": True, "text": f"Posted in #{channel.name}.", "link": message.jump_url}
+    except discord.HTTPException as e:
+        return JSONResponse({"error": f"Discord refused it: {e.text or e}"}, status_code=400)
+
+
+# -------- Routes: role panel editor ----------------------------------------
+
+async def _publish_role_panel() -> str:
+    from cogs.role_panel import refresh_panel_message
+    bot = current_bot()
+    results = [await refresh_panel_message(bot, g) for g in _guilds()] if bot else []
+    return ", ".join(results) or "bot not connected"
+
+
+@app.get("/role-panel", response_class=HTMLResponse)
+async def role_panel_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.role_panel import BUTTON_STYLES, assignable_roles, get_panel_config
+    guilds = _guilds()
+    roles = assignable_roles(guilds[0]) if guilds else []
+    config = get_panel_config()
+    buttons = config.get("buttons", [])
+    existing = {b["role"] for b in buttons}
+    return _page(request, "role_panel.html", config=config, buttons=buttons, styles=list(BUTTON_STYLES),
+                 roles=[r for r in roles if r.name not in existing])
+
+
+async def _save_role_panel(config: dict, msg: str):
+    from cogs.role_panel import save_panel_config
+    save_panel_config(config)
+    status_text = await _publish_role_panel()
+    log.info("Role panel changed via web panel: %s (%s)", msg, status_text)
+    return _redirect("/role-panel", msg=f"{msg} - {status_text}.")
+
+
+@app.post("/role-panel/text")
+async def role_panel_text(request: Request, title: str = Form(...), description: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.role_panel import get_panel_config
+    config = get_panel_config()
+    config["title"] = title.strip()[:256] or "Pick Your Roles"
+    config["description"] = description.replace("\r", "").strip()[:4000]
+    return await _save_role_panel(config, "Text saved")
+
+
+@app.post("/role-panel/add")
+async def role_panel_add(request: Request, role_id: str = Form(...), label: str = Form(""), emoji: str = Form(""),
+                         style: str = Form("secondary"), row: int = Form(0)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.role_panel import BUTTON_STYLES, MAX_BUTTONS, assignable_roles, get_panel_config
+    guilds = _guilds()
+    role = next((r for r in (assignable_roles(guilds[0]) if guilds else []) if str(r.id) == role_id), None)
+    if role is None:
+        return _redirect("/role-panel", err="That role can't be self-assigned (too powerful, or above the bot's role).")
+    config = get_panel_config()
+    buttons = config.setdefault("buttons", [])
+    if any(b["role"] == role.name for b in buttons):
+        return _redirect("/role-panel", err="That role already has a button.")
+    if len(buttons) >= MAX_BUTTONS:
+        return _redirect("/role-panel", err="Max. 25 buttons.")
+    row = max(0, min(4, row))
+    if sum(1 for b in buttons if b.get("row", 0) == row) >= 5:
+        return _redirect("/role-panel", err=f"Row {row + 1} is full (5 buttons) - pick another row.")
+    emoji = emoji.strip()
+    if emoji:
+        parsed = discord.PartialEmoji.from_str(emoji)
+        if parsed.id is None and (len(emoji) > 8 or emoji.isascii()):
+            return _redirect("/role-panel", err="Emoji must be a single emoji or a custom emoji like <:name:123>.")
+    buttons.append({
+        "role": role.name,
+        "label": (label.strip() or role.name)[:80],
+        "emoji": emoji or None,
+        "style": style if style in BUTTON_STYLES else "secondary",
+        "row": row,
+    })
+    return await _save_role_panel(config, f"Button for {role.name} added")
+
+
+@app.post("/role-panel/change")
+async def role_panel_change(request: Request, index: int = Form(...), action: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.role_panel import get_panel_config
+    config = get_panel_config()
+    buttons = config.get("buttons", [])
+    if not 0 <= index < len(buttons):
+        return _redirect("/role-panel", err="Button not found.")
+    if action == "remove":
+        removed = buttons.pop(index)
+        return await _save_role_panel(config, f"Button for {removed['role']} removed")
+    if action in ("up", "down"):
+        other = index - 1 if action == "up" else index + 1
+        if 0 <= other < len(buttons):
+            buttons[index], buttons[other] = buttons[other], buttons[index]
+        return await _save_role_panel(config, "Order changed")
+    return _redirect("/role-panel", err="Unknown action.")

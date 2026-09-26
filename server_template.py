@@ -18,6 +18,9 @@ CHANNELS = {
     "mod_stats":       "\U0001F4C8-mod-stats",
     "crash_analyzer":  "\U0001F50D-crash-analyzer",
     "roadmap":         "\U0001F5FA-roadmap",
+    "compatibility":   "\U0001F9E9-compatibility",
+    "staff_team":      "\U0001F46E-staff-team",
+    "counting":        "\U0001F522-counting",
     "beta_program":    "\U0001F9EA-beta-program",
     "beta_testing":    "\U0001F9EA-beta-testing",
     "beta_applications": "\U0001F4DD-beta-applications",
@@ -162,6 +165,14 @@ SERVER_TEMPLATE = {
                  "overwrites": {
                      "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
                  }},
+                {"name": CHANNELS["compatibility"],   "type": "text", "topic": "Which mod supports which Minecraft version and loader. Updated automatically.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
+                 }},
+                {"name": CHANNELS["staff_team"],      "type": "text", "topic": "Who is on the team. Updated automatically.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
+                 }},
                 {"name": CHANNELS["beta_program"],    "type": "text", "topic": "Apply to become a beta tester while applications are open.",
                  "overwrites": {
                      "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
@@ -214,6 +225,7 @@ SERVER_TEMPLATE = {
                      "Owner":     {"view_channel": True, "send_messages": True,  "read_message_history": True, "manage_messages": True},
                  }},
                 {"name": CHANNELS["art"],          "type": "text",  "topic": "Show off your creative work.", "slowmode": 15},
+                {"name": CHANNELS["counting"],     "type": "text",  "topic": "Count up together, one number per message. The same person can't count twice in a row - a wrong number resets to 0!"},
                 {"name": CHANNELS["beta_testing"], "type": "text",  "topic": "Beta builds, test instructions and feedback - beta testers only.",
                  "overwrites": {
                      "@everyone":   {"view_channel": False},
@@ -367,6 +379,14 @@ SERVER_TEMPLATE = {
                 "emoji": "\U0001F41B",
                 "style": "danger",
                 "color": "0xE74C3C",
+                # Asked in a form before the ticket opens (max. 5 fields).
+                "form": [
+                    {"label": "Mod and mod version", "placeholder": "e.g. SmiteMod 1.2.0", "max_length": 100},
+                    {"label": "Minecraft version and loader", "placeholder": "e.g. 1.21.1 NeoForge", "max_length": 100},
+                    {"label": "What happened?", "style": "long", "placeholder": "What did you expect, what happened instead?", "max_length": 1000},
+                    {"label": "Steps to reproduce", "style": "long", "required": False, "max_length": 1000},
+                    {"label": "Crash log link (mclo.gs etc.)", "required": False, "max_length": 300},
+                ],
                 "intro": (
                     "Hi {user}, thanks for reporting a bug.\n\n"
                     "**Please include:**\n"
@@ -544,11 +564,14 @@ SERVER_TEMPLATE = {
     # Level system. Level-ups are announced in CHANNELS["level_ups"].
     "levels": {
         "enabled": True,
+        # Voice XP: per minute in a voice channel with at least one other person
+        # (not muted/deafened by yourself, not in the AFK channel).
+        "voice_xp_per_minute": 4,
         "xp_min": 15,
         "xp_max": 25,
         "cooldown_seconds": 60,       # XP at most once per minute per member
         "min_message_length": 3,
-        "no_xp_channels": [CHANNELS["bot_commands"], CHANNELS["level_ups"]],
+        "no_xp_channels": [CHANNELS["bot_commands"], CHANNELS["level_ups"], CHANNELS["counting"]],
         # level -> role name (roles are created by /setup). Only the highest earned
         # level role is kept unless stack_roles is True.
         "level_roles": {5: "Level 5", 10: "Level 10", 20: "Level 20", 30: "Level 30", 50: "Level 50"},
@@ -615,6 +638,80 @@ SERVER_TEMPLATE = {
     "stats": {
         "enabled": True,
         "keep_days": 180,
+    },
+
+    # /mod, /changelog, compatibility table, download milestones, release feedback polls.
+    "mod_info": {
+        "compatibility_refresh_hours": 6,
+        "milestones": [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000],
+        "milestone_channel": CHANNELS["mod_stats"],
+        # N days after a new release, a feedback poll is posted in the polls channel.
+        "feedback_after_days": 3,
+        "feedback_poll_hours": 72,
+        "feedback_options": ["Works great", "Small issues", "Crashes / broken", "Haven't tried it yet"],
+    },
+
+    # Automatic FAQ suggestions: when someone asks a question that matches a FAQ's
+    # name or keywords (/faq add ... keywords:...), the bot replies with the answer.
+    "faq_suggestions": {
+        "enabled": True,
+        "channels": [CHANNELS["general"], CHANNELS["mod_support"], CHANNELS["bot_commands"], CHANNELS["off_topic"]],
+        "cooldown_minutes": 10,       # same FAQ at most once per channel in this time
+    },
+
+    # Counting channel.
+    "counting": {
+        "enabled": True,
+    },
+
+    # "Did you know?" tip once a day. Manage tips with /tip add / remove / list.
+    "tips": {
+        "enabled": True,
+        "channel": CHANNELS["general"],
+        "hour": 17,
+        "timezone": "Europe/Berlin",
+        "defaults": [
+            "Your game crashed? Upload your `latest.log` in the crash analyzer channel - the bot tells you what's wrong.",
+            "Use the Minecraft-version menu in the mod downloads channel to get the right file for your setup.",
+            "Always check that Fabric API is installed when a Fabric mod doesn't load.",
+            "Allocating more than half of your PC's RAM to Minecraft usually makes it slower, not faster.",
+            "You can pick notification roles in the roles channel to get pinged for new releases.",
+            "Found a bug? Open a Bug Report ticket - the form makes sure we get all the details.",
+            "Check the roadmap channel to see what's coming next for each mod.",
+        ],
+    },
+
+    # Automatic slowmode: the busier a channel gets, the longer the slowmode.
+    # Rules are checked from the top; "messages" = messages in the last 60 seconds.
+    "auto_slowmode": {
+        "enabled": True,
+        "channels": [CHANNELS["general"], CHANNELS["off_topic"], CHANNELS["memes"], CHANNELS["media"],
+                     CHANNELS["introductions"], CHANNELS["art"], CHANNELS["suggestions"]],
+        "levels": [
+            {"messages": 80, "slowmode": 30},
+            {"messages": 50, "slowmode": 15},
+            {"messages": 35, "slowmode": 10},
+            {"messages": 20, "slowmode": 5},
+        ],
+        "calm_minutes": 3,            # back to normal after this long below the lowest level
+    },
+
+    # Staff list in CHANNELS["staff_team"] (highest role first).
+    "staff_list": {
+        "enabled": True,
+        "roles": ["Owner", "Admin", "Moderator"],
+    },
+
+    # Invite tracking. The leaderboard is only visible to administrators.
+    "invites": {
+        "enabled": True,
+    },
+
+    # Error alerts: errors in the bot are sent by DM to every member with the
+    # Administrator permission (turn off for yourself with /error-alerts off).
+    "error_alerts": {
+        "enabled": True,
+        "min_minutes_between_same_error": 30,
     },
 
     # Automatic backups of the bot data (warnings, levels, FAQs, ...) and the server
