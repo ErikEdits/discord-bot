@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from cogs.common import was_deleted_by_bot
+from cogs.common import is_selftest_name, was_deleted_by_bot
 from server_template import CHANNELS
 
 log = logging.getLogger("setup-bot.logging")
@@ -194,8 +194,8 @@ class Logging(commands.Cog):
         changes = []
         if before.nick != after.nick:
             changes.append(("Nickname", f"`{before.nick or '(none)'}` -> `{after.nick or '(none)'}`"))
-        added = set(after.roles) - set(before.roles)
-        removed = set(before.roles) - set(after.roles)
+        added = {r for r in set(after.roles) - set(before.roles) if not is_selftest_name(r.name)}
+        removed = {r for r in set(before.roles) - set(after.roles) if not is_selftest_name(r.name)}
         if added:
             changes.append(("Roles Added", ", ".join(r.mention for r in added)))
         if removed:
@@ -215,7 +215,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None or ch.id == getattr(channel, "id", None) or _is_temp_voice(channel):
+        if ch is None or ch.id == getattr(channel, "id", None) or _is_temp_voice(channel) or is_selftest_name(channel.name):
             return
         embed = discord.Embed(title="Channel Created", color=0x2ECC71, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)
@@ -225,7 +225,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None or _is_temp_voice(channel):
+        if ch is None or _is_temp_voice(channel) or is_selftest_name(channel.name):
             return
         embed = discord.Embed(title="Channel Deleted", color=0xE74C3C, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)
@@ -256,7 +256,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role):
         ch = _get_log_channel(role.guild, "server")
-        if ch is None:
+        if ch is None or is_selftest_name(role.name):
             return
         embed = discord.Embed(title="Role Created", color=0x2ECC71, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Role", value=role.mention, inline=True)
@@ -268,7 +268,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
         ch = _get_log_channel(role.guild, "server")
-        if ch is None:
+        if ch is None or is_selftest_name(role.name):
             return
         embed = discord.Embed(title="Role Deleted", color=0xE74C3C, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=role.name, inline=True)
@@ -279,6 +279,8 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        if is_selftest_name(after.name):
+            return
         changes = []
         if before.name != after.name:
             changes.append(("Name", f"`{before.name}` -> `{after.name}`"))
