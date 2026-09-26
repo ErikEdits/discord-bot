@@ -80,16 +80,30 @@ def _save_state(data: dict) -> None:
     STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-async def _fetch(session: aiohttp.ClientSession, url: str) -> Any | None:
-    try:
-        async with session.get(url, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=15)) as r:
-            if r.status != 200:
-                log.warning("Modrinth GET %s -> HTTP %s", url, r.status)
-                return None
-            return await r.json()
-    except Exception:
-        log.exception("Modrinth fetch failed: %s", url)
-        return None
+async def _fetch(session: aiohttp.ClientSession, url: str, attempts: int = 2) -> Any | None:
+    """GET a Modrinth API URL. Timeouts, connection errors and Modrinth-side errors
+    (429/5xx) are retried once and then only logged as a warning: Modrinth being slow
+    or down for a moment isn't a bot error, so it shouldn't trigger error-alert DMs.
+    The callers simply try again on their next run."""
+    for attempt in range(1, attempts + 1):
+        try:
+            async with session.get(url, headers={"User-Agent": USER_AGENT},
+                                   timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 200:
+                    return await r.json()
+                problem = f"HTTP {r.status}"
+                if r.status != 429 and r.status < 500:
+                    log.warning("Modrinth GET %s -> %s", url, problem)
+                    return None
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            problem = type(exc).__name__ if isinstance(exc, asyncio.TimeoutError) else f"{type(exc).__name__}: {exc}"
+        except Exception:
+            log.exception("Modrinth fetch failed: %s", url)
+            return None
+        if attempt < attempts:
+            await asyncio.sleep(2)
+    log.warning("Modrinth not reachable right now (%s): %s - will retry on the next run", problem, url)
+    return None
 
 
 def _format_version_embed(project: dict, version: dict) -> discord.Embed:
