@@ -209,6 +209,7 @@ class RulesAcceptButton(discord.ui.Button):
 
 if LOW_POWER:
     EXTENSIONS = (
+        "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
         "cogs.tickets",
@@ -216,21 +217,32 @@ if LOW_POWER:
         "cogs.backup",
         "cogs.poll",
         "cogs.community",
+        "cogs.reminders",
+        "cogs.giveaway",
     )
-    log.info("LOW_POWER mode: skipping cogs.logging_cog, modrinth, welcome_dm (background-heavy)")
+    log.info("LOW_POWER mode: skipping logging, anti-spam, link filter, modrinth, mod stats, welcome DM, "
+             "crash analyzer, levels and member counter (background-heavy)")
 else:
     EXTENSIONS = (
+        "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
         "cogs.logging_cog",
         "cogs.antispam",
+        "cogs.linkfilter",
         "cogs.tickets",
+        "cogs.crash_analyzer",
         "cogs.modrinth",
+        "cogs.mod_stats",
         "cogs.welcome_dm",
         "cogs.utility",
         "cogs.backup",
         "cogs.poll",
         "cogs.community",
+        "cogs.levels",
+        "cogs.giveaway",
+        "cogs.reminders",
+        "cogs.member_counter",
     )
 
 
@@ -899,6 +911,38 @@ async def post_mod_download_panel(guild, template, bot_user):
         return False
 
 
+def build_crash_panel(template):
+    if not template.get("crash_analyzer", {}).get("enabled"):
+        return None, None
+    from cogs.crash_analyzer import CrashPanelView, build_panel_embed
+    return build_panel_embed(), CrashPanelView()
+
+
+async def post_crash_panel(guild, template, bot_user):
+    channel = discord.utils.get(guild.text_channels, name=CHANNELS.get("crash_analyzer", ""))
+    if channel is None:
+        return False
+    embed, view = build_crash_panel(template)
+    if embed is None:
+        return False
+    if await channel_has_bot_messages(channel, bot_user):
+        return False
+    try:
+        await channel.send(embed=embed, view=view)
+        log.info("Posted crash analyzer panel to #%s", channel.name)
+        return True
+    except Exception:
+        log.exception("Failed to post crash analyzer panel")
+        return False
+
+
+async def ensure_member_counter(guild):
+    if "cogs.member_counter" not in bot.extensions:
+        return "disabled"
+    from cogs.member_counter import ensure_counter_channel
+    return await ensure_counter_channel(guild)
+
+
 async def post_ticket_panel(guild, template, bot_user):
     channel = discord.utils.get(guild.text_channels, name=CHANNELS["tickets"])
     if channel is None:
@@ -1030,6 +1074,12 @@ async def refresh_panels(guild, template, bot_user):
         results["ticket_panel"] = await refresh_or_post(tickets_ch, bot_user, embed, view)
         await throttle()
 
+    crash_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("crash_analyzer", ""))
+    embed, view = build_crash_panel(template)
+    if crash_ch and embed is not None:
+        results["crash_panel"] = await refresh_or_post(crash_ch, bot_user, embed, view)
+        await throttle()
+
     config = template.get("modrinth", {})
     downloads_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("mod_downloads", ""))
     if downloads_ch and config.get("enabled") and config.get("username"):
@@ -1122,6 +1172,8 @@ async def setup_cmd(interaction: discord.Interaction):
     panel_posted = await post_reaction_role_panel(guild, SERVER_TEMPLATE, bot.user)
     ticket_panel_posted = await post_ticket_panel(guild, SERVER_TEMPLATE, bot.user)
     mod_download_posted = await post_mod_download_panel(guild, SERVER_TEMPLATE, bot.user)
+    crash_panel_posted = await post_crash_panel(guild, SERVER_TEMPLATE, bot.user)
+    counter_state = await ensure_member_counter(guild)
     welcome_screen_set = await configure_welcome_screen(guild, SERVER_TEMPLATE)
     onboarding_set = await configure_onboarding(guild, SERVER_TEMPLATE, role_lookup)
 
@@ -1135,6 +1187,8 @@ async def setup_cmd(interaction: discord.Interaction):
         f"- Reaction-role panel: **{'posted' if panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Ticket panel: **{'posted to #' + CHANNELS['tickets'] if ticket_panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Mod-download panel: **{'posted to #' + CHANNELS['mod_downloads'] if mod_download_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Crash-analyzer panel: **{'posted to #' + CHANNELS['crash_analyzer'] if crash_panel_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Member counter: **{counter_state}**",
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped (needs Community Server)'}**",
         f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (needs Community Server)'}**",
         "- Rules and welcome embeds posted where missing.",
@@ -1190,6 +1244,7 @@ async def update_cmd(interaction: discord.Interaction):
     welcome_screen_set = await configure_welcome_screen(guild, SERVER_TEMPLATE)
     onboarding_set = await configure_onboarding(guild, SERVER_TEMPLATE, role_lookup)
     panel_results = await refresh_panels(guild, SERVER_TEMPLATE, bot.user)
+    counter_state = await ensure_member_counter(guild)
 
     panels_str = ", ".join(
         f"{name} {status}" for name, status in panel_results.items() if status
@@ -1205,6 +1260,7 @@ async def update_cmd(interaction: discord.Interaction):
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped'}**",
         f"- Onboarding: **{'configured' if onboarding_set else 'skipped'}**",
         f"- Panels: {panels_str}",
+        f"- Member counter: **{counter_state}**",
     ]
 
     log_embed = discord.Embed(

@@ -186,7 +186,7 @@ class Poll(commands.Cog):
         if not poll or poll.get("status") != "open":
             return
         task = self._tasks.pop(poll_id, None)
-        if task and reason == "manual":
+        if task and reason != "expired":  # "expired" means we're running inside that task
             task.cancel()
 
         channel = self.bot.get_channel(poll["channel_id"])
@@ -248,31 +248,22 @@ class Poll(commands.Cog):
                 log.info("Could not DM poll result to owner")
         log.info("Closed poll %s (%d votes, reason=%s)", poll_id, total, reason)
 
-    async def _create_poll(self, interaction: discord.Interaction, question: str,
-                           options: list[str], duration_hours: float):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-        if not (MIN_OPTIONS <= len(options) <= MAX_OPTIONS):
-            await interaction.response.send_message(
-                f"Please provide between {MIN_OPTIONS} and {MAX_OPTIONS} options.",
-                ephemeral=True,
-            )
-            return
-        if duration_hours <= 0 or duration_hours > 24 * 30:
-            await interaction.response.send_message("Duration must be between 0 and 720 hours.", ephemeral=True)
-            return
+    async def start_poll(self, guild: discord.Guild, question: str, options: list[str],
+                         duration_hours: float, created_by: int) -> tuple[str, discord.TextChannel]:
+        """Post a poll in the guild's poll channel. Raises ValueError with a user-facing message.
 
+        Used by /poll and by the web panel.
+        """
+        if not question.strip():
+            raise ValueError("The question can't be empty.")
+        if not (MIN_OPTIONS <= len(options) <= MAX_OPTIONS):
+            raise ValueError(f"Please provide between {MIN_OPTIONS} and {MAX_OPTIONS} options.")
+        if duration_hours <= 0 or duration_hours > 24 * 30:
+            raise ValueError("Duration must be between 0 and 720 hours.")
         channel = _poll_channel(guild)
         if channel is None:
-            await interaction.response.send_message(
-                f"Poll channel not found. Run `/update` to create #{CHANNELS.get(POLL_CHANNEL_KEY)}.",
-                ephemeral=True,
-            )
-            return
+            raise ValueError(f"Poll channel not found. Run `/update` to create #{CHANNELS.get(POLL_CHANNEL_KEY)}.")
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
         end_ts = time.time() + duration_hours * 3600
         embed = _build_poll_embed(question, options, end_ts)
         try:
@@ -280,8 +271,7 @@ class Poll(commands.Cog):
             for i in range(len(options)):
                 await message.add_reaction(NUMBER_EMOJI[i])
         except discord.Forbidden:
-            await interaction.followup.send("I can't post or react in the poll channel.", ephemeral=True)
-            return
+            raise ValueError("I can't post or react in the poll channel.")
 
         poll_id = uuid.uuid4().hex[:8]
         state = _load_state()
@@ -294,11 +284,25 @@ class Poll(commands.Cog):
             "options": options,
             "end_ts": end_ts,
             "status": "open",
-            "created_by": interaction.user.id,
+            "created_by": created_by,
             "created_at": time.time(),
         }
         _save_state(state)
         self._schedule(poll_id, end_ts - time.time())
+        return poll_id, channel
+
+    async def _create_poll(self, interaction: discord.Interaction, question: str,
+                           options: list[str], duration_hours: float):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            poll_id, channel = await self.start_poll(guild, question, options, duration_hours, interaction.user.id)
+        except ValueError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
         await interaction.followup.send(
             f"Poll created in {channel.mention} (ID `{poll_id}`). Closes in {duration_hours:g}h.",
             ephemeral=True,

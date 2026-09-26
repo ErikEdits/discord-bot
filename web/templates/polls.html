@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Polls - Bot Panel{% endblock %}
+{% block content %}
+<h1>Polls</h1>
+<div class="section">
+    <h3>Create a poll</h3>
+    {% if guilds %}
+    <form method="post" action="/polls/create" class="form-grid">
+        <div class="form-row">
+            <div>
+                <label for="guild_id">Server</label>
+                <select name="guild_id" id="guild_id">
+                    {% for g in guilds %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="preset">Preset (optional - replaces question and options)</label>
+                <select name="preset" id="preset">
+                    <option value="">- own poll -</option>
+                    {% for p in presets %}<option value="{{ p.key }}">{{ p.label or p.key }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="duration_hours">Duration (hours)</label>
+                <input type="number" name="duration_hours" id="duration_hours" value="24" min="0.1" max="720" step="0.1">
+            </div>
+        </div>
+        <div>
+            <label for="question">Question</label>
+            <input type="text" name="question" id="question" maxlength="250">
+        </div>
+        <div>
+            <label for="options">Options (one per line, 2-9)</label>
+            <textarea name="options" id="options"></textarea>
+        </div>
+        <div><button type="submit">Post poll</button> <span class="muted">Posted in the server's polls channel.</span></div>
+    </form>
+    {% else %}
+    <div class="empty">Bot not connected to Discord yet.</div>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h3>Running</h3>
+    {% if open_polls %}
+    <table>
+        <thead><tr><th>ID</th><th>Server</th><th>Question</th><th>Options</th><th>Closes</th><th></th></tr></thead>
+        <tbody>
+        {% for p in open_polls %}
+            <tr>
+                <td><code>{{ p.id }}</code></td>
+                <td class="muted">{{ p.guild_name }}</td>
+                <td>{{ p.question }}</td>
+                <td class="muted">{{ p.options | join(", ") }}</td>
+                <td class="muted">in {{ ((p.end_ts - now) / 3600) | round(1) }} h</td>
+                <td>
+                    <form method="post" action="/polls/close">
+                        <input type="hidden" name="poll_id" value="{{ p.id }}">
+                        <button class="small danger" onclick="return confirm('Close this poll now and post the result?')">Close now</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No running polls.</div>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h3>Recently closed</h3>
+    {% if closed_polls %}
+    <table>
+        <thead><tr><th>ID</th><th>Question</th><th>Result</th></tr></thead>
+        <tbody>
+        {% for p in closed_polls %}
+            <tr>
+                <td><code>{{ p.id }}</code></td>
+                <td>{{ p.question }}</td>
+                <td class="muted">{% for label, votes in p.results %}{{ label }}: <strong>{{ votes }}</strong>{% if not loop.last %} · {% endif %}{% endfor %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No closed polls yet.</div>
+    {% endif %}
+</div>
+{% endblock %}

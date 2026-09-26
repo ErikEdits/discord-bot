@@ -15,6 +15,8 @@ CHANNELS = {
     "tickets":         "\U0001F3AB-tickets",
     "mod_releases":    "\U0001F514-mod-releases",
     "mod_downloads":   "\U0001F4E6-mod-downloads",
+    "mod_stats":       "\U0001F4C8-mod-stats",
+    "crash_analyzer":  "\U0001F50D-crash-analyzer",
     "general":         "\U0001F4AC-general",
     "introductions":   "\U0001F64B-introductions",
     "off_topic":       "\U0001F3B2-off-topic",
@@ -24,6 +26,7 @@ CHANNELS = {
     "suggestions":     "\U0001F4A1-suggestions",
     "events":          "\U0001F389-events",
     "polls":           "\U0001F4CA-polls",
+    "level_ups":       "\U0001F199-level-ups",
     "art":             "\U0001F3A8-art-and-creations",
     "mod_support":     "\U0001F6E0-mod-support",
     "staff_chat":      "\U0001F6E1-staff-chat",
@@ -98,6 +101,12 @@ SERVER_TEMPLATE = {
         {"name": "German",        "color": "0xD35400", "hoist": False, "mentionable": False, "permissions": {}},
         {"name": "English",       "color": "0x2980B9", "hoist": False, "mentionable": False, "permissions": {}},
         {"name": "Japanese",      "color": "0xC0392B", "hoist": False, "mentionable": False, "permissions": {}},
+        # Level roles, handed out automatically by the level system (see "levels" below).
+        {"name": "Level 5",       "color": "0x95A5A6", "hoist": False, "mentionable": False, "permissions": {}},
+        {"name": "Level 10",      "color": "0x1ABC9C", "hoist": False, "mentionable": False, "permissions": {}},
+        {"name": "Level 20",      "color": "0x3498DB", "hoist": False, "mentionable": False, "permissions": {}},
+        {"name": "Level 30",      "color": "0x9B59B6", "hoist": False, "mentionable": False, "permissions": {}},
+        {"name": "Level 50",      "color": "0xF1C40F", "hoist": False, "mentionable": False, "permissions": {}},
     ],
 
     "categories": [
@@ -134,6 +143,14 @@ SERVER_TEMPLATE = {
                 {"name": CHANNELS["tickets"],         "type": "text", "topic": "Open a private support ticket - bug report, feature request, general help.",
                  "overwrites": {
                      "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
+                 }},
+                {"name": CHANNELS["crash_analyzer"],  "type": "text", "topic": "Game crashed? Click the button, upload your log and the bot tells you what went wrong.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
+                 }},
+                {"name": CHANNELS["mod_stats"],       "type": "text", "topic": "Weekly download statistics for all mods.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
                  }},
             ],
         },
@@ -173,6 +190,15 @@ SERVER_TEMPLATE = {
                 {"name": CHANNELS["suggestions"],  "type": "text",  "topic": "Suggest improvements for the server.", "slowmode": 30},
                 {"name": CHANNELS["events"],       "type": "text",  "topic": "Upcoming community events."},
                 {"name": CHANNELS["polls"],        "type": "text",  "topic": "Vote in community polls by reacting. Reaction votes are NOT anonymous - others can see who voted. Please pick only one option."},
+                {"name": CHANNELS["level_ups"],    "type": "text",  "topic": "Level-up announcements. Check your rank with /rank, the top list with /leaderboard.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": False},
+                     "Member":    {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
+                     "VIP":       {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
+                     "Moderator": {"view_channel": True, "send_messages": False, "read_message_history": True, "manage_messages": True},
+                     "Admin":     {"view_channel": True, "send_messages": True,  "read_message_history": True, "manage_messages": True},
+                     "Owner":     {"view_channel": True, "send_messages": True,  "read_message_history": True, "manage_messages": True},
+                 }},
                 {"name": CHANNELS["art"],          "type": "text",  "topic": "Show off your creative work.", "slowmode": 15},
                 {"name": CHANNELS["mod_support"],  "type": "forum", "topic": "Get help with the mods. Open a post per question."},
             ],
@@ -302,6 +328,11 @@ SERVER_TEMPLATE = {
         "support_role_names": ["Moderator", "Admin", "Owner"],
         "auto_close_hours": 48,  # close tickets with no activity after N hours; set to 0 to disable
         "auto_close_check_minutes": 30,
+        # Ticket types whose tickets get a staff-only "Forward bug" button. It sends a
+        # summary + transcript to the webhook set with /settings bug-webhook.
+        "forward_types": ["bug"],
+        # After a ticket is closed the opener gets a DM asking for a 1-5 star rating.
+        "rating_enabled": True,
         "types": [
             {
                 "key": "bug",
@@ -434,11 +465,91 @@ SERVER_TEMPLATE = {
         },
     ],
 
-    # Auto up/down voting + discussion threads in the suggestions channel.
+    # Suggestions: every message in the suggestions channel is reposted by the bot
+    # as an embed with up/down votes, a discussion thread and staff buttons
+    # (Accept / Reject / In progress - usable only by members with Administrator).
     "suggestions": {
         "enabled": True,
         "create_threads": True,
         "thread_archive_minutes": 1440,  # 24h
+        "dm_author_on_status": True,
+    },
+
+    # Crash-log analyzer: panel in CHANNELS["crash_analyzer"] opens a private channel
+    # where the user uploads latest.log / a crash report. Files are only read in
+    # memory, never stored.
+    "crash_analyzer": {
+        "enabled": True,
+        "category_name": "CRASH REPORTS",
+        "max_file_mb": 8,
+        "auto_close_hours": 6,        # delete idle analyzer channels after N hours
+    },
+
+    # Download statistics posted to CHANNELS["mod_stats"].
+    "mod_stats": {
+        "enabled": True,
+        "interval": "weekly",         # "daily" or "weekly"
+        "weekday": 0,                 # 0 = Monday (only for weekly)
+        "hour": 10,                   # local hour in "timezone"
+        "timezone": "Europe/Berlin",
+    },
+
+    # Link filter: removes invites to other Discord servers and scam links.
+    # Staff (Manage Messages) are exempt. Pause with /maintenance linkfilter.
+    "link_filter": {
+        "enabled": True,
+        "block_invites": True,
+        "block_scam_links": True,
+        # Never touched by the scam check (subdomains included).
+        "allowed_domains": [
+            "modrinth.com", "cdn.modrinth.com", "github.com", "githubusercontent.com",
+            "curseforge.com", "forgecdn.net", "minecraft.net", "mojang.com",
+            "fabricmc.net", "neoforged.net", "minecraftforge.net", "quiltmc.org",
+            "youtube.com", "youtu.be", "twitch.tv", "imgur.com", "mclo.gs",
+            "pastebin.com", "discord.com", "discord.gg", "discordapp.com",
+            "discordapp.net", "tenor.com", "giphy.com",
+        ],
+        # Always removed, in addition to the built-in lookalike detection.
+        "blocked_domains": [],
+        "warn_message": "{user} that link isn't allowed here and was removed.",
+    },
+
+    # Level system. Level-ups are announced in CHANNELS["level_ups"].
+    "levels": {
+        "enabled": True,
+        "xp_min": 15,
+        "xp_max": 25,
+        "cooldown_seconds": 60,       # XP at most once per minute per member
+        "min_message_length": 3,
+        "no_xp_channels": [CHANNELS["bot_commands"], CHANNELS["level_ups"]],
+        # level -> role name (roles are created by /setup). Only the highest earned
+        # level role is kept unless stack_roles is True.
+        "level_roles": {5: "Level 5", 10: "Level 10", 20: "Level 20", 30: "Level 30", 50: "Level 50"},
+        "stack_roles": False,
+    },
+
+    # Voice channel at the top of INFORMATION that shows the member count.
+    # Discord allows only 2 renames per 10 minutes, so it updates every 10 min.
+    "member_counter": {
+        "enabled": True,
+        "name_format": "\U0001F465 Members: {count}",
+        "category": "\U0001F4CB INFORMATION",
+        "count_bots": True,
+    },
+
+    # Reminders (/remind), delivered by DM.
+    "reminders": {
+        "max_per_user": 25,
+        "max_days": 365,
+    },
+
+    # Automatic backups of the bot data (warnings, levels, FAQs, ...) and the server
+    # structure, sent to the webhook set with /settings backup-webhook.
+    # Nothing is kept on the bot host.
+    "backups": {
+        "enabled": True,
+        "hour": 4,
+        "timezone": "Europe/Berlin",
     },
 
     # Consecutive-duplicate message protection (needs Message Content intent).

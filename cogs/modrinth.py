@@ -2,7 +2,8 @@
 
 Polls the configured Modrinth user's projects on an interval and posts
 new versions to a dedicated channel. State (last seen version per project)
-is persisted to data/modrinth.json so restarts don't re-announce.
+is persisted to data/modrinth.json so restarts don't re-announce, and releases
+published while the bot was offline are announced after the next start.
 
 Config in SERVER_TEMPLATE['modrinth']:
     enabled         bool
@@ -46,6 +47,9 @@ LOADER_EMOJI = {
     "spigot": "\U0001F7E1",     # yellow circle
     "minecraft": "\U0001F9F1",  # brick (resource pack / default)
 }
+
+# Max. releases per project announced after downtime (oldest first).
+MAX_CATCH_UP_PER_PROJECT = 5
 
 VERSION_TYPE_COLOR = {
     "release": 0x2ECC71,
@@ -245,7 +249,6 @@ class ModDownloadView(discord.ui.View):
 class Modrinth(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._first_run = True
         self._proj_cache: list = []      # cached project list for autocomplete
         self._proj_cache_ts: float = 0.0
         cfg = _config()
@@ -271,6 +274,11 @@ class Modrinth(commands.Cog):
             return
 
         state = _load_state()
+        # With no saved state at all (fresh install) we only record the current versions,
+        # so the channel isn't flooded with the whole release history. Once state exists,
+        # every version published after the last one we saw is announced - including
+        # releases that came out while the bot was offline.
+        initialized = bool(state["projects"])
         async with aiohttp.ClientSession() as session:
             projects = await _fetch(session, f"{API_BASE}/user/{username}/projects")
             if not projects:
@@ -286,31 +294,32 @@ class Modrinth(commands.Cog):
                     continue
                 versions.sort(key=lambda v: v.get("date_published", ""), reverse=True)
                 latest = versions[0]
-                latest_id = latest.get("id")
-                seen = state["projects"].get(pid, {})
-                last_seen_id = seen.get("last_version_id")
+                seen = state["projects"].get(pid)
 
-                if self._first_run:
-                    # On first run after restart, just record current state - don't announce backlog.
-                    state["projects"][pid] = {
-                        "last_version_id": latest_id,
-                        "last_version_number": latest.get("version_number"),
-                        "last_published": latest.get("date_published"),
-                    }
-                    continue
+                if seen is None:
+                    # A project we've never seen: announce only its newest version.
+                    if initialized:
+                        new_versions.append((project, latest))
+                else:
+                    last_id = seen.get("last_version_id")
+                    last_published = seen.get("last_published") or ""
+                    missed = [
+                        v for v in versions
+                        if v.get("id") != last_id and v.get("date_published", "") > last_published
+                    ]
+                    # Oldest first, and cap it so a long outage doesn't spam the channel.
+                    for v in reversed(missed[:MAX_CATCH_UP_PER_PROJECT]):
+                        new_versions.append((project, v))
 
-                if latest_id and latest_id != last_seen_id:
-                    new_versions.append((project, latest))
-                    state["projects"][pid] = {
-                        "last_version_id": latest_id,
-                        "last_version_number": latest.get("version_number"),
-                        "last_published": latest.get("date_published"),
-                    }
+                state["projects"][pid] = {
+                    "last_version_id": latest.get("id"),
+                    "last_version_number": latest.get("version_number"),
+                    "last_published": latest.get("date_published"),
+                }
 
             _save_state(state)
 
-        if self._first_run:
-            self._first_run = False
+        if not initialized:
             log.info("Modrinth: initial state recorded for %d projects", len(projects))
             return
 
@@ -352,11 +361,7 @@ class Modrinth(commands.Cog):
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        # Reset first_run so we actually post any new versions found.
-        prev = self._first_run
-        self._first_run = False
         await self.poll_loop()
-        self._first_run = prev if not self.poll_loop.is_running() else False
         await interaction.followup.send("Modrinth poll triggered. Check the releases channel.", ephemeral=True)
 
     async def _cached_projects(self) -> list:

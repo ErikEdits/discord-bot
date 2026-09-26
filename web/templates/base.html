@@ -13,11 +13,17 @@
     <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Dashboard</a>
     <a href="/tickets" {% if request.url.path == "/tickets" %}class="active"{% endif %}>Tickets</a>
     <a href="/warnings" {% if request.url.path == "/warnings" %}class="active"{% endif %}>Warnings</a>
+    <a href="/faqs" {% if request.url.path == "/faqs" %}class="active"{% endif %}>FAQs</a>
+    <a href="/polls" {% if request.url.path == "/polls" %}class="active"{% endif %}>Polls</a>
+    <a href="/announce" {% if request.url.path == "/announce" %}class="active"{% endif %}>Announce</a>
+    <a href="/maintenance" {% if request.url.path == "/maintenance" %}class="active"{% endif %}>Maintenance</a>
     <a href="/logs" {% if request.url.path == "/logs" %}class="active"{% endif %}>Logs</a>
     <form action="/logout" method="post"><button class="small">Logout</button></form>
 </nav>
 {% endif %}
 <main>
+{% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash error">{{ err }}</div>{% endif %}
 {% block content %}{% endblock %}
 </main>
 </body>

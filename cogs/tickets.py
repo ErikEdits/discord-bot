@@ -2,6 +2,14 @@
 per-close transcripts saved to a ticket-archive channel, and automatic
 closure of inactive tickets.
 
+Inside a ticket, staff can:
+- "Claim" it (shows who takes care of it),
+- add / remove people with /ticket-add and /ticket-remove,
+- "Forward bug" (bug tickets): sends a summary + transcript to the webhook
+  set with /settings bug-webhook.
+After a ticket is closed the opener gets a DM asking for a 1-5 star rating;
+the rating is posted to the ticket-archive channel.
+
 Configuration lives in SERVER_TEMPLATE['tickets']. Ticket types each
 become a separate button on the panel posted by /ticket-panel.
 """
@@ -18,6 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from cogs.common import is_staff, post_to_webhook, webhook_url
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.tickets")
@@ -44,6 +53,18 @@ def _category_name() -> str:
 
 def _support_role_names() -> list:
     return _config().get("support_role_names", ["Moderator", "Admin", "Owner"])
+
+
+def _is_staff(member) -> bool:
+    return is_staff(member, _support_role_names())
+
+
+def _is_ticket_channel(channel) -> bool:
+    return (
+        isinstance(channel, discord.TextChannel)
+        and channel.category is not None
+        and channel.category.name == _category_name()
+    )
 
 
 def _ticket_type(key: str) -> dict | None:
@@ -183,8 +204,81 @@ async def _archive_and_delete(channel: discord.TextChannel, closer: discord.abc.
         await channel.delete(reason=f"Ticket closed by {closer}")
     except discord.Forbidden:
         log.warning("Cannot delete ticket channel: %s", channel.name)
+        return
     except discord.NotFound:
-        pass
+        return  # already closed by a second click - that call asks for the rating
+
+    creator_id, _type_key = _parse_topic(channel)
+    if creator_id and _config().get("rating_enabled", True):
+        await _ask_for_rating(guild, creator_id, channel.name)
+
+
+async def _ask_for_rating(guild: discord.Guild, user_id: int, ticket_name: str) -> None:
+    user = guild.get_member(user_id)
+    if user is None:
+        return
+    view = discord.ui.View(timeout=None)
+    for stars in range(1, 6):
+        view.add_item(RateButton(guild.id, stars, ticket_name))
+    embed = discord.Embed(
+        title="How was your support?",
+        description=f"Your ticket **#{ticket_name}** on **{guild.name}** was closed.\n"
+                    "Please rate the help you got - it takes one click.",
+        color=0x5865F2,
+    )
+    try:
+        await user.send(embed=embed, view=view)
+    except (discord.Forbidden, discord.HTTPException):
+        log.info("Could not DM rating request to %s", user)
+
+
+class RateButton(discord.ui.DynamicItem[discord.ui.Button],
+                 template=r"ticket:rate:(?P<guild>\d+):(?P<stars>[1-5]):(?P<name>[^:]{1,60})"):
+    """Star button in the rating DM. Works across restarts (the data is in the custom_id)."""
+
+    def __init__(self, guild_id: int, stars: int, ticket_name: str):
+        self.guild_id = guild_id
+        self.stars = stars
+        self.ticket_name = ticket_name[:60]
+        super().__init__(discord.ui.Button(
+            label=str(stars),
+            emoji="\u2B50",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"ticket:rate:{guild_id}:{stars}:{self.ticket_name}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["guild"]), int(match["stars"]), match["name"])
+
+    async def callback(self, interaction: discord.Interaction):
+        stars_text = "\u2B50" * self.stars
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Thanks for your feedback!",
+                description=f"You rated ticket **#{self.ticket_name}** with {stars_text}",
+                color=0x57F287,
+            ),
+            view=None,
+        )
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            return
+        archive = discord.utils.get(guild.text_channels, name=CHANNELS["ticket_archive"])
+        if archive is None:
+            return
+        embed = discord.Embed(
+            title=f"Ticket rated: #{self.ticket_name}",
+            description=f"{stars_text} ({self.stars}/5)",
+            color=0x57F287 if self.stars >= 4 else 0xF1C40F if self.stars == 3 else 0xE74C3C,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="By", value=f"{interaction.user.mention} ({interaction.user})", inline=False)
+        try:
+            await archive.send(embed=embed)
+        except discord.HTTPException:
+            pass
+        log.info("Ticket %s rated %d/5 by %s", self.ticket_name, self.stars, interaction.user)
 
 
 async def _open_ticket(interaction: discord.Interaction, type_key: str) -> None:
@@ -272,11 +366,12 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str) -> None:
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text="Use the Close Ticket button or /close when finished.")
+    forward = type_key in _config().get("forward_types", ["bug"])
     try:
         await ticket_channel.send(
             content=" ".join(mentions) if mentions else None,
             embed=embed,
-            view=CloseTicketView(),
+            view=TicketControlsView(forward=forward),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
     except discord.Forbidden:
@@ -308,22 +403,125 @@ class TicketPanelView(discord.ui.View):
             self.add_item(OpenTicketButton(t))
 
 
-class CloseTicketView(discord.ui.View):
-    def __init__(self):
+class TicketControlsView(discord.ui.View):
+    """Buttons on the first message of every ticket.
+
+    Registered once with forward=True so all three custom_ids are handled after a
+    restart; tickets of types without forwarding just don't show that button.
+    """
+
+    def __init__(self, forward: bool = True):
         super().__init__(timeout=None)
+        if not forward:
+            self.remove_item(self.forward_bug)
 
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
                        emoji="\U0001F512", custom_id="ticket:close")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _do_close(interaction)
 
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.success,
+                       emoji="\U0001F64B", custom_id="ticket:claim")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_claim(interaction)
+
+    @discord.ui.button(label="Forward bug", style=discord.ButtonStyle.primary,
+                       emoji="\U0001F4E4", custom_id="ticket:forward")
+    async def forward_bug(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_ticket_channel(interaction.channel):
+            await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
+            return
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can forward bugs.", ephemeral=True)
+            return
+        if not webhook_url("bug_webhook", "BUG_WEBHOOK_URL"):
+            await interaction.response.send_message(
+                "No bug webhook is set. An administrator can set it with `/settings bug-webhook`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(ForwardBugModal(interaction.channel))
+
+
+# Old ticket messages were sent with this view; keep the name working.
+CloseTicketView = TicketControlsView
+
+
+async def _do_claim(interaction: discord.Interaction) -> None:
+    channel = interaction.channel
+    if not _is_ticket_channel(channel):
+        await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
+        return
+    if not _is_staff(interaction.user):
+        await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True)
+        return
+    message = interaction.message
+    embed = message.embeds[0] if message and message.embeds else None
+    if embed is not None:
+        for field in embed.fields:
+            if field.name == "Claimed by":
+                await interaction.response.send_message(f"Already claimed by {field.value}.", ephemeral=True)
+                return
+        embed.add_field(name="Claimed by", value=interaction.user.mention, inline=False)
+        await interaction.response.edit_message(embed=embed)
+        await channel.send(f"\U0001F64B {interaction.user.mention} is taking care of this ticket.")
+    else:
+        await interaction.response.send_message(f"\U0001F64B {interaction.user.mention} is taking care of this ticket.")
+    log.info("Ticket %s claimed by %s", channel.name, interaction.user)
+
+
+class ForwardBugModal(discord.ui.Modal, title="Forward bug report"):
+    bug_title = discord.ui.TextInput(label="Title", max_length=200)
+    summary = discord.ui.TextInput(
+        label="Summary (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1500,
+        placeholder="What's the bug, which mod/version, how to reproduce...",
+    )
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.channel = channel
+        self.bug_title.default = channel.name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        url = webhook_url("bug_webhook", "BUG_WEBHOOK_URL")
+        creator_id, type_key = _parse_topic(self.channel)
+        filename, body = await _build_transcript(self.channel)
+        embed = discord.Embed(
+            title=f"\U0001F41B {self.bug_title.value}"[:256],
+            description=(self.summary.value or "*(no summary - see transcript)*")[:4000],
+            color=0xE74C3C,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Ticket", value=f"#{self.channel.name}", inline=True)
+        embed.add_field(name="Server", value=self.channel.guild.name, inline=True)
+        if creator_id:
+            opener = self.channel.guild.get_member(creator_id)
+            embed.add_field(name="Reported by", value=str(opener) if opener else f"User ID {creator_id}", inline=True)
+        embed.add_field(name="Forwarded by", value=str(interaction.user), inline=True)
+        ok = await post_to_webhook(
+            url, embed=embed, file_name=filename, file_bytes=body.encode("utf-8"), username="Bug Reports",
+        )
+        if not ok:
+            await interaction.followup.send("Sending to the bug webhook failed - check `/settings show`.", ephemeral=True)
+            return
+        await interaction.followup.send("Bug forwarded.", ephemeral=True)
+        try:
+            await self.channel.send(f"\U0001F4E4 This bug was forwarded to the developers by {interaction.user.mention}.")
+        except discord.HTTPException:
+            pass
+        log.info("Bug ticket %s forwarded by %s", self.channel.name, interaction.user)
+
 
 async def _do_close(interaction: discord.Interaction) -> None:
     channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel) or channel.category is None or channel.category.name != _category_name():
+    if not _is_ticket_channel(channel):
         await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
         return
-    is_mod = interaction.user.guild_permissions.manage_channels
+    is_mod = _is_staff(interaction.user)
     creator_id, _ = _parse_topic(channel)
     is_creator = creator_id == interaction.user.id
     if not (is_mod or is_creator):
@@ -344,7 +542,8 @@ class Tickets(commands.Cog):
         types_def = _config().get("types", [])
         if types_def:
             bot.add_view(TicketPanelView(types_def))
-        bot.add_view(CloseTicketView())
+        bot.add_view(TicketControlsView(forward=True))
+        bot.add_dynamic_items(RateButton)
         low_power = os.getenv("LOW_POWER", "").lower() in ("1", "true", "yes")
         if low_power:
             log.info("LOW_POWER: skipping ticket auto-close background loop")
@@ -380,6 +579,45 @@ class Tickets(commands.Cog):
     @app_commands.command(name="close", description="Close the current ticket channel.")
     async def close(self, interaction: discord.Interaction):
         await _do_close(interaction)
+
+    @app_commands.command(name="ticket-add", description="Add a member to this ticket (staff).")
+    @app_commands.describe(member="Member who should see this ticket")
+    async def ticket_add(self, interaction: discord.Interaction, member: discord.Member):
+        if not _is_ticket_channel(interaction.channel):
+            await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
+            return
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can add members to tickets.", ephemeral=True)
+            return
+        try:
+            await interaction.channel.set_permissions(
+                member, view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True, embed_links=True, reason=f"Added to ticket by {interaction.user}",
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("I can't change this channel's permissions.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"\u2795 {member.mention} was added to this ticket by {interaction.user.mention}.")
+
+    @app_commands.command(name="ticket-remove", description="Remove a member from this ticket (staff).")
+    @app_commands.describe(member="Member to remove from this ticket")
+    async def ticket_remove(self, interaction: discord.Interaction, member: discord.Member):
+        if not _is_ticket_channel(interaction.channel):
+            await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
+            return
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can remove members from tickets.", ephemeral=True)
+            return
+        creator_id, _ = _parse_topic(interaction.channel)
+        if member.id == creator_id:
+            await interaction.response.send_message("You can't remove the person who opened the ticket.", ephemeral=True)
+            return
+        try:
+            await interaction.channel.set_permissions(member, overwrite=None, reason=f"Removed from ticket by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I can't change this channel's permissions.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"\u2796 {member.mention} was removed from this ticket.")
 
     @tasks.loop(minutes=30)
     async def auto_close_loop(self):

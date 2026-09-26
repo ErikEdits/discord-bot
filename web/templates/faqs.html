@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}FAQs - Bot Panel{% endblock %}
+{% block content %}
+<h1>FAQs</h1>
+<div class="section">
+    <h3>Add or update a FAQ</h3>
+    {% if guilds %}
+    <form method="post" action="/faqs/save" class="form-grid">
+        <div class="form-row">
+            <div>
+                <label for="guild_id">Server</label>
+                <select name="guild_id" id="guild_id">
+                    {% for g in guilds %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="name">Name (shown in /faq show)</label>
+                <input type="text" name="name" id="name" maxlength="100" placeholder="e.g. install" required>
+            </div>
+        </div>
+        <div>
+            <label for="answer">Answer</label>
+            <textarea name="answer" id="answer" maxlength="4000" required></textarea>
+        </div>
+        <div><button type="submit">Save FAQ</button> <span class="muted">An existing FAQ with the same name is replaced.</span></div>
+    </form>
+    {% else %}
+    <div class="empty">Bot not connected to Discord yet.</div>
+    {% endif %}
+</div>
+
+{% for block in per_guild %}
+<div class="section">
+    <h3>{{ block.guild.name }} <span class="pill">{{ block.faqs | length }} FAQ(s)</span></h3>
+    {% if block.faqs %}
+    <table>
+        <thead><tr><th>Name</th><th>Answer</th><th></th></tr></thead>
+        <tbody>
+        {% for key, entry in block.faqs %}
+            <tr>
+                <td><code>{{ key }}</code></td>
+                <td class="faq-answer">{{ entry.answer }}</td>
+                <td>
+                    <form method="post" action="/faqs/delete">
+                        <input type="hidden" name="guild_id" value="{{ block.guild.id }}">
+                        <input type="hidden" name="name" value="{{ key }}">
+                        <button class="small danger" onclick="return confirm('Delete this FAQ?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No FAQs yet.</div>
+    {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

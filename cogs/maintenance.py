@@ -30,6 +30,8 @@ FEATURES = {
     "ticket":       "Ticket System",
     "moddownload":  "Mod Downloads",
     "antispam":     "Anti-Spam",
+    "linkfilter":   "Link Filter",
+    "crash":        "Crash Analyzer",
 }
 
 
@@ -116,6 +118,18 @@ class Maintenance(commands.Cog):
     @app_commands.choices(state=STATE_CHOICES)
     async def antispam(self, interaction: discord.Interaction, state: app_commands.Choice[str], message: str = ""):
         await self._toggle(interaction, "antispam", state.value, message)
+
+    @group.command(name="linkfilter", description="Pause the link filter (maintenance mode).")
+    @app_commands.describe(state="Enable or disable maintenance", message="Optional note shown in /maintenance status")
+    @app_commands.choices(state=STATE_CHOICES)
+    async def linkfilter(self, interaction: discord.Interaction, state: app_commands.Choice[str], message: str = ""):
+        await self._toggle(interaction, "linkfilter", state.value, message)
+
+    @group.command(name="crash", description="Put the crash-log analyzer into maintenance mode.")
+    @app_commands.describe(state="Enable or disable maintenance", message="Optional message shown when users click the analyzer button")
+    @app_commands.choices(state=STATE_CHOICES)
+    async def crash(self, interaction: discord.Interaction, state: app_commands.Choice[str], message: str = ""):
+        await self._toggle(interaction, "crash", state.value, message)
 
     @group.command(name="status", description="Show the maintenance status of every feature.")
     async def status(self, interaction: discord.Interaction):

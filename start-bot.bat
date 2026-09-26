@@ -19,14 +19,14 @@ goto no_python
 
 :have_python
 REM --- 2) Install dependencies only if something is missing ---
-%PY% -c "import discord, fastapi, uvicorn, jinja2, psutil, aiohttp, dotenv" >nul 2>nul
+%PY% -c "import discord, fastapi, uvicorn, jinja2, psutil, aiohttp, dotenv, zoneinfo; discord.ui.DynamicItem; zoneinfo.ZoneInfo('Europe/Berlin')" >nul 2>nul
 if %errorlevel% equ 0 goto run
 echo.
 echo ============================================================
 echo   First run: installing dependencies (needs internet)...
 echo ============================================================
 %PY% -m pip install --upgrade pip
-%PY% -m pip install -r requirements.txt
+%PY% -m pip install --upgrade -r requirements.txt
 if %errorlevel% neq 0 goto pip_failed
 
 :run

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+from cogs.common import was_deleted_by_bot
 from server_template import CHANNELS
 
 log = logging.getLogger("setup-bot.logging")
@@ -68,6 +69,8 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if message.guild is None or (message.author and message.author.bot):
+            return
+        if was_deleted_by_bot(message.id):
             return
         ch = _get_log_channel(message.guild, "message")
         if ch is None or ch.id == message.channel.id:

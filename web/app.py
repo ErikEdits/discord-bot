@@ -377,3 +377,223 @@ async def api_logs(request: Request, since: float = 0):
         raise HTTPException(401)
     entries = [e for e in LOG_BUFFER if e["time"] > since]
     return {"entries": entries, "now": time.time()}
+
+
+# -------- Helpers for the management pages ---------------------------------
+
+def _redirect(path: str, msg: str | None = None, err: str | None = None) -> RedirectResponse:
+    from urllib.parse import urlencode
+    params = {k: v for k, v in (("msg", msg), ("err", err)) if v}
+    return RedirectResponse(path + (("?" + urlencode(params)) if params else ""), status_code=303)
+
+
+def _guilds() -> list[discord.Guild]:
+    bot = current_bot()
+    if bot is None or not bot.is_ready():
+        return []
+    return sorted(bot.guilds, key=lambda g: g.name.lower())
+
+
+def _guild(guild_id) -> Optional[discord.Guild]:
+    try:
+        gid = int(guild_id)
+    except (TypeError, ValueError):
+        return None
+    return next((g for g in _guilds() if g.id == gid), None)
+
+
+def _page(request: Request, template: str, **context):
+    return templates.TemplateResponse(request, template, {
+        "authenticated": True,
+        "msg": request.query_params.get("msg"),
+        "err": request.query_params.get("err"),
+        "guilds": _guilds(),
+        **context,
+    })
+
+
+# -------- Routes: FAQs -----------------------------------------------------
+
+@app.get("/faqs", response_class=HTMLResponse)
+async def faqs_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.community import _load_faqs
+    data = _load_faqs()
+    per_guild = []
+    for g in _guilds():
+        entries = sorted(data.get(str(g.id), {}).items())
+        per_guild.append({"guild": g, "faqs": entries})
+    return _page(request, "faqs.html", per_guild=per_guild)
+
+
+@app.post("/faqs/save")
+async def faqs_save(request: Request, guild_id: str = Form(...), name: str = Form(...), answer: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.community import _load_faqs, _save_faqs
+    guild = _guild(guild_id)
+    key = name.strip().lower()
+    if guild is None or not key or not answer.strip():
+        return _redirect("/faqs", err="Server, name and answer are required.")
+    if len(key) > 100 or len(answer) > 4000:
+        return _redirect("/faqs", err="Name max. 100 and answer max. 4000 characters.")
+    data = _load_faqs()
+    data.setdefault(str(guild.id), {})[key] = {
+        "answer": answer.strip(),
+        "added_by": "web panel",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_faqs(data)
+    log.info("FAQ '%s' saved via panel", key)
+    return _redirect("/faqs", msg=f"FAQ '{key}' saved.")
+
+
+@app.post("/faqs/delete")
+async def faqs_delete(request: Request, guild_id: str = Form(...), name: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.community import _load_faqs, _save_faqs
+    data = _load_faqs()
+    if data.get(guild_id, {}).pop(name, None) is None:
+        return _redirect("/faqs", err="That FAQ doesn't exist.")
+    _save_faqs(data)
+    log.info("FAQ '%s' deleted via panel", name)
+    return _redirect("/faqs", msg=f"FAQ '{name}' deleted.")
+
+
+# -------- Routes: polls ----------------------------------------------------
+
+@app.get("/polls", response_class=HTMLResponse)
+async def polls_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.poll import _load_state, _presets
+    polls = list(_load_state()["polls"].values())
+    names = {g.id: g.name for g in _guilds()}
+    for p in polls:
+        p["guild_name"] = names.get(p.get("guild_id"), str(p.get("guild_id")))
+    open_polls = sorted((p for p in polls if p.get("status") == "open"), key=lambda p: p["end_ts"])
+    closed = sorted((p for p in polls if p.get("status") != "open"),
+                    key=lambda p: p.get("closed_at", 0), reverse=True)[:15]
+    for p in closed:
+        counts = p.get("counts") or [0] * len(p["options"])
+        p["results"] = sorted(zip(p["options"], counts), key=lambda r: r[1], reverse=True)
+    return _page(request, "polls.html", open_polls=open_polls, closed_polls=closed, presets=_presets(), now=time.time())
+
+
+@app.post("/polls/create")
+async def polls_create(request: Request, guild_id: str = Form(...), question: str = Form(""),
+                       options: str = Form(""), duration_hours: float = Form(24.0), preset: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    bot = current_bot()
+    cog = bot.get_cog("Poll") if bot else None
+    guild = _guild(guild_id)
+    if cog is None or guild is None:
+        return _redirect("/polls", err="Bot not ready or poll feature not loaded.")
+    if preset:
+        from cogs.poll import _preset_by_key
+        p = _preset_by_key(preset)
+        if p is None:
+            return _redirect("/polls", err="Unknown preset.")
+        question, option_list = p["question"], list(p["options"])
+    else:
+        raw = options.replace("\r", "")
+        parts = raw.split("\n") if "\n" in raw.strip() else raw.split(",")
+        option_list = [o.strip() for o in parts if o.strip()]
+    try:
+        poll_id, channel = await cog.start_poll(guild, question.strip(), option_list, duration_hours, 0)
+    except ValueError as e:
+        return _redirect("/polls", err=str(e))
+    log.info("Poll %s created via panel", poll_id)
+    return _redirect("/polls", msg=f"Poll {poll_id} posted in #{channel.name}.")
+
+
+@app.post("/polls/close")
+async def polls_close(request: Request, poll_id: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    bot = current_bot()
+    cog = bot.get_cog("Poll") if bot else None
+    if cog is None:
+        return _redirect("/polls", err="Poll feature not loaded.")
+    await cog._close_poll(poll_id, reason="closed via web panel")
+    return _redirect("/polls", msg=f"Poll {poll_id} closed.")
+
+
+# -------- Routes: maintenance ----------------------------------------------
+
+@app.get("/maintenance", response_class=HTMLResponse)
+async def maintenance_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.maintenance import FEATURES, _load
+    state = _load()
+    features = [
+        {"key": k, "label": label, "enabled": state.get(k, {}).get("enabled", False),
+         "message": state.get(k, {}).get("message", "")}
+        for k, label in FEATURES.items()
+    ]
+    return _page(request, "maintenance.html", features=features)
+
+
+@app.post("/maintenance/set")
+async def maintenance_set(request: Request, feature: str = Form(...), state: str = Form(...), message: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.maintenance import FEATURES, set_state
+    if feature not in FEATURES:
+        return _redirect("/maintenance", err="Unknown feature.")
+    enabled = state == "on"
+    set_state(feature, enabled, message.strip()[:500])
+    log.info("Maintenance %s -> %s via panel", feature, "on" if enabled else "off")
+    return _redirect("/maintenance", msg=f"{FEATURES[feature]} is now {'in maintenance' if enabled else 'online'}.")
+
+
+# -------- Routes: announcements --------------------------------------------
+
+@app.get("/announce", response_class=HTMLResponse)
+async def announce_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    channels = []
+    for g in _guilds():
+        for ch in sorted(g.text_channels, key=lambda c: (c.category.position if c.category else -1, c.position)):
+            if ch.permissions_for(g.me).send_messages:
+                channels.append({"id": ch.id, "label": f"{g.name} / #{ch.name}",
+                                 "category": ch.category.name if ch.category else ""})
+    return _page(request, "announce.html", channels=channels)
+
+
+@app.post("/announce")
+async def announce_send(request: Request, channel_id: str = Form(...), title: str = Form(...),
+                        message: str = Form(...), ping_everyone: Optional[str] = Form(None)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    bot = current_bot()
+    if bot is None or not bot.is_ready():
+        return _redirect("/announce", err="Bot not connected.")
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except ValueError:
+        channel = None
+    if not isinstance(channel, discord.TextChannel):
+        return _redirect("/announce", err="Channel not found.")
+    if not title.strip() or not message.strip():
+        return _redirect("/announce", err="Title and message are required.")
+    embed = discord.Embed(
+        title=title.strip()[:256],
+        description=message.replace("\r", "").strip()[:4000],
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Announcement")
+    ping = ping_everyone == "on"
+    try:
+        await channel.send(content="@everyone" if ping else None, embed=embed,
+                           allowed_mentions=discord.AllowedMentions(everyone=ping))
+    except discord.HTTPException as e:
+        return _redirect("/announce", err=f"Sending failed: {e}")
+    log.info("Announcement posted via panel in #%s", channel.name)
+    return _redirect("/announce", msg=f"Announcement posted in #{channel.name}.")

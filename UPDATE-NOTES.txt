@@ -1,0 +1,143 @@
+============================================================
+ BOT UPDATE - 14 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) Bot neu starten (bot-hosting.net Panel). requirements.txt hat sich
+   geaendert (discord.py >= 2.4, tzdata) - die Pakete muessen neu
+   installiert werden.
+2) In Discord /update ausfuehren. Das legt an:
+   - #🔍-crash-analyzer   (Info-Bereich, nur lesen, mit Button)
+   - #📈-mod-stats        (Info-Bereich, nur lesen)
+   - #🆙-level-ups        (Community, nur Member sehen es, nur lesen)
+   - Rollen Level 5 / 10 / 20 / 30 / 50
+   - Voice-Channel "👥 Members: ..." ganz oben im Info-Bereich
+3) Webhooks setzen (nur mit Administrator-Berechtigung):
+     /settings bug-webhook url:<deine Webhook-URL>
+     /settings backup-webhook url:<Webhook-URL fuer Backups>
+     /settings show    -> zeigt, was eingestellt ist
+   Beim Setzen schickt der Bot eine Testnachricht an den Webhook.
+4) Die Bot-Rolle in den Server-Einstellungen UEBER die Level-Rollen
+   ziehen, sonst kann er sie nicht vergeben.
+5) "Message Content Intent" muss im Developer Portal an sein
+   (war schon fuer Anti-Spam noetig). Crash-Analyzer, Link-Filter,
+   Vorschlaege und Levels brauchen ihn.
+
+
+WAS IST NEU
+-----------
+ 1. CRASH-ANALYZER
+    - Button in #🔍-crash-analyzer -> privater Channel (wie ein Ticket)
+    - User laedt latest.log / Crash-Report / hs_err_pid.log hoch
+      (.log .txt .gz, max 8 MB) oder schickt einen mclo.gs-Link
+    - Bot erkennt u.a.: fehlende/falsche Abhaengigkeiten (Fabric, Forge,
+      NeoForge), falsche Java-Version, doppelte Mods, zu wenig RAM,
+      Mixin-Fehler, Mod fuer falschen Loader, kaputte Config,
+      Grafiktreiber-Crashes, OptiFine+Sodium, Server-Probleme (EULA,
+      Port, Watchdog), "Code not found"-Fehler
+    - Dateien werden NUR im Speicher gelesen, nie gespeichert
+    - Channel wird nach 6h Inaktivitaet automatisch geloescht
+    - Button "Still broken? Open a ticket" -> oeffnet Bug-Ticket
+    - Pausieren: /maintenance crash
+
+ 3. MODRINTH: VERPASSTE RELEASES
+    - Releases, die erscheinen waehrend der Bot offline ist, werden
+      beim naechsten Start nachgepostet (max. 5 pro Projekt, aelteste
+      zuerst)
+
+ 4. DOWNLOAD-STATISTIK
+    - Jeden Montag 10:00 (Europe/Berlin) in #📈-mod-stats:
+      Downloads + Follower pro Mod und Zuwachs seit letzter Woche
+    - /modstats (fuer alle, nur du siehst es)
+    - /modstats-post (Admin, postet sofort)
+    - Einstellbar in server_template.py -> "mod_stats"
+      (daily/weekly, Wochentag, Uhrzeit)
+
+ 6. BUG-TICKETS AN WEBHOOK
+    - In Bug-Tickets gibt es fuer Staff den Button "Forward bug"
+    - Fenster mit Titel + Zusammenfassung -> geht mit komplettem
+      Verlauf (.txt) an den Webhook von /settings bug-webhook
+
+10. LINK-FILTER
+    - Loescht Einladungen zu ANDEREN Discord-Servern
+      (Einladungen zum eigenen Server sind erlaubt)
+    - Loescht Scam-Links: Fake-Seiten wie "dlscord-nitro.ru",
+      "modrlnth.com", "steamcommunlty.com" und "free nitro"-Koeder
+    - Erlaubte Seiten (Modrinth, GitHub, CurseForge, YouTube, ...)
+      werden nie angefasst -> Liste in server_template.py
+      "link_filter" -> "allowed_domains"
+    - Staff (Nachrichten verwalten) ist ausgenommen
+    - Jede Loeschung landet in #mod-logs
+    - Pausieren: /maintenance linkfilter
+
+11. TEMP-BAN
+    - /tempban @user dauer:7d grund:...  (braucht "Mitglieder bannen")
+    - User bekommt vorher eine DM mit Dauer und Grund
+    - Wird automatisch entbannt, auch nach einem Neustart
+
+12. MODERATIONS-VERLAUF
+    - /modhistory @user  (braucht "Mitglieder moderieren")
+    - Alle Verwarnungen, Timeouts, Kicks, Bans, Temp-Bans auf einen
+      Blick + aktueller Status (Timeout / gebannt / nicht mehr da)
+    - Funktioniert auch fuer User, die schon weg oder gebannt sind
+
+13. LEVELSYSTEM
+    - 15-25 XP pro Nachricht, max. 1x pro Minute (Spam bringt nichts)
+    - Kein XP in #bot-commands und #level-ups
+    - Level-Ups werden in #🆙-level-ups gepostet
+    - Level-Rollen bei 5 / 10 / 20 / 30 / 50 (nur die hoechste bleibt)
+    - /rank, /leaderboard
+    - Admin: /xp set, /xp reset
+
+14. GEWINNSPIELE (nur Admin)
+    - /giveaway start preis dauer [gewinner] [channel] [rolle]
+    - Button "Join" (nochmal klicken = austreten)
+    - Optional nur fuer eine bestimmte Rolle
+    - /giveaway end, /giveaway reroll, /giveaway list
+    - Ueberlebt Neustarts, Gewinner werden automatisch gezogen
+
+15. ERINNERUNGEN PER DM
+    - /remind in:2h text:Update testen
+    - /reminders list, /reminders delete
+
+16. MITGLIEDERZAEHLER
+    - Voice-Channel "👥 Members: 342" (man kann nicht joinen)
+    - Aktualisiert sich alle 10 Minuten (Discord-Limit)
+
+17. VORSCHLAEGE MIT STATUS
+    - Nachrichten in #💡-suggestions postet der Bot als Embed neu
+      (mit Bildern), mit 👍/👎 und Diskussions-Thread
+    - Buttons: Accept / In progress / Reject
+      -> NUR Leute mit Administrator-Berechtigung koennen sie benutzen
+    - Optionaler Grund, Embed wird farbig, Autor bekommt eine DM
+
+18. TICKETS
+    - "Claim"-Button: Staff uebernimmt ein Ticket
+    - /ticket-add @user, /ticket-remove @user (Staff)
+    - Nach dem Schliessen bekommt der Ersteller eine DM mit
+      1-5 Sternen, Bewertung landet in #📁-ticket-archive
+    - Moderatoren koennen jetzt auch fremde Tickets schliessen
+      (vorher ging das nur mit "Kanaele verwalten")
+
+19. WEB-PANEL
+    - Neue Seiten: FAQs (anlegen/loeschen), Polls (erstellen/schliessen,
+      auch Presets), Announce (Ankuendigung posten), Maintenance
+      (Features an/aus)
+    - Kein Neustart-Knopf
+
+20. AUTOMATISCHE BACKUPS
+    - Jeden Tag ab 04:00 schickt der Bot ein .zip an den Backup-Webhook:
+      alle Bot-Daten (Warns, Levels, FAQs, Polls, Giveaways, ...)
+      + Server-Struktur. Auf dem Bot-Server bleibt NICHTS liegen.
+    - /backup-now        (Admin) sofort ein Backup schicken
+    - /backup-restore    (Admin) Bot-Daten aus so einem .zip
+                          wiederherstellen (mit Bestaetigung).
+                          Channels und Rollen werden NICHT angefasst.
+    - Webhook-URLs sind nie im Backup enthalten.
+
+
+LOW_POWER=true
+--------------
+Schaltet zusaetzlich ab: Link-Filter, Crash-Analyzer, Mod-Statistik,
+Levels, Mitgliederzaehler.
