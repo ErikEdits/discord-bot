@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Bot Panel{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+{% if not status.ready %}
+<div class="section"><span class="dot offline"></span> Bot not connected to Discord yet.</div>
+{% else %}
+<div class="cards">
+    <div class="card">
+        <div class="label">Status</div>
+        <div class="value"><span class="dot online"></span>{{ status.bot_name }}</div>
+        <div class="sub">ID: {{ status.bot_id }}</div>
+    </div>
+    <div class="card">
+        <div class="label">Uptime</div>
+        <div class="value">{{ status.uptime }}</div>
+        <div class="sub">Latency: {{ status.latency_ms }} ms</div>
+    </div>
+    <div class="card">
+        <div class="label">Server</div>
+        <div class="value">{{ status.guild_name or "—" }}</div>
+        <div class="sub">{{ status.member_count }} members</div>
+    </div>
+    <div class="card">
+        <div class="label">Channels / Roles</div>
+        <div class="value">{{ status.channel_count }} / {{ status.role_count }}</div>
+        <div class="sub">{{ status.guild_count }} guild(s) total</div>
+    </div>
+    <div class="card">
+        <div class="label">Active Tickets</div>
+        <div class="value">{{ ticket_count }}</div>
+        <div class="sub"><a href="/tickets">Manage →</a></div>
+    </div>
+    <div class="card">
+        <div class="label">Warnings Issued</div>
+        <div class="value">{{ warning_count }}</div>
+        <div class="sub"><a href="/warnings">Manage →</a></div>
+    </div>
+</div>
+{% endif %}
+
+<div class="section">
+    <h3><span class="live-pulse"></span>Server Load <span class="live-label">live - updates every 3s</span></h3>
+    <div class="cards">
+        <div class="card">
+            <div class="label">CPU</div>
+            <div class="value" id="sys-cpu-value">{{ system.cpu.percent }}%</div>
+            <div class="bar-wrap"><div class="bar-fill" id="sys-cpu-bar" style="width: {{ system.cpu.percent }}%"></div></div>
+            <div class="sub" id="sys-cpu-sub">{{ system.cpu.count }} core(s){% if system.cpu.load1 is not none %} · load {{ system.cpu.load1 }} {{ system.cpu.load5 }} {{ system.cpu.load15 }}{% endif %}</div>
+        </div>
+        <div class="card">
+            <div class="label">Memory</div>
+            <div class="value" id="sys-mem-value">{{ system.memory.percent }}%</div>
+            <div class="bar-wrap"><div class="bar-fill" id="sys-mem-bar" style="width: {{ system.memory.percent }}%"></div></div>
+            <div class="sub" id="sys-mem-sub">{{ system.memory.used_mb }} / {{ system.memory.total_mb }} MB</div>
+        </div>
+        <div class="card">
+            <div class="label">Disk</div>
+            <div class="value" id="sys-disk-value">{{ system.disk.percent }}%</div>
+            <div class="bar-wrap"><div class="bar-fill" id="sys-disk-bar" style="width: {{ system.disk.percent }}%"></div></div>
+            <div class="sub" id="sys-disk-sub">{{ system.disk.used_gb }} / {{ system.disk.total_gb }} GB</div>
+        </div>
+        <div class="card">
+            <div class="label">Bot Process</div>
+            <div class="value" id="sys-proc-value">{{ system.process.memory_mb or 0 }} MB</div>
+            <div class="sub" id="sys-proc-sub">CPU {{ system.process.cpu_percent or 0 }}%</div>
+        </div>
+        <div class="card">
+            <div class="label">Network</div>
+            <div class="value" id="sys-net-value">{{ (system.network.recv_mb or 0) }} MB in</div>
+            <div class="sub" id="sys-net-sub">{{ (system.network.sent_mb or 0) }} MB out (total)</div>
+        </div>
+    </div>
+</div>
+
+<script>
+function pct(v) { return Math.round((v || 0) * 10) / 10; }
+function setBarColor(el, p) {
+    el.classList.remove('warn', 'crit');
+    if (p >= 90) el.classList.add('crit');
+    else if (p >= 75) el.classList.add('warn');
+}
+async function tickSystem() {
+    try {
+        const r = await fetch('/api/system');
+        if (!r.ok) return;
+        const s = await r.json();
+        const cpu = pct(s.cpu.percent);
+        document.getElementById('sys-cpu-value').textContent = cpu + '%';
+        const cpuBar = document.getElementById('sys-cpu-bar');
+        cpuBar.style.width = cpu + '%';
+        setBarColor(cpuBar, cpu);
+        let cpuSub = s.cpu.count + ' core(s)';
+        if (s.cpu.load1 !== null) cpuSub += ' · load ' + s.cpu.load1 + ' ' + s.cpu.load5 + ' ' + s.cpu.load15;
+        document.getElementById('sys-cpu-sub').textContent = cpuSub;
+
+        const memPercent = pct(s.memory.percent);
+        document.getElementById('sys-mem-value').textContent = memPercent + '%';
+        const memBar = document.getElementById('sys-mem-bar');
+        memBar.style.width = memPercent + '%';
+        setBarColor(memBar, memPercent);
+        document.getElementById('sys-mem-sub').textContent = s.memory.used_mb + ' / ' + s.memory.total_mb + ' MB';
+
+        const diskPercent = pct(s.disk.percent);
+        document.getElementById('sys-disk-value').textContent = diskPercent + '%';
+        const diskBar = document.getElementById('sys-disk-bar');
+        diskBar.style.width = diskPercent + '%';
+        setBarColor(diskBar, diskPercent);
+        document.getElementById('sys-disk-sub').textContent = s.disk.used_gb + ' / ' + s.disk.total_gb + ' GB';
+
+        document.getElementById('sys-proc-value').textContent = (s.process.memory_mb || 0) + ' MB';
+        document.getElementById('sys-proc-sub').textContent = 'CPU ' + pct(s.process.cpu_percent) + '%';
+
+        document.getElementById('sys-net-value').textContent = (s.network.recv_mb || 0) + ' MB in';
+        document.getElementById('sys-net-sub').textContent = (s.network.sent_mb || 0) + ' MB out (total)';
+    } catch (e) {}
+}
+// Initial color for bars from server-rendered values.
+['sys-cpu-bar','sys-mem-bar','sys-disk-bar'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) setBarColor(el, parseFloat(el.style.width));
+});
+setInterval(tickSystem, 3000);
+</script>
+
+<div class="section">
+    <h3>Recent activity</h3>
+    {% if recent_logs %}
+    <div>
+        {% for entry in recent_logs %}
+        <div class="log-line">
+            <span class="log-time">{{ entry.time | round(0) | int }}</span>
+            <span class="log-level lvl-{{ entry.level }}">{{ entry.level }}</span>
+            <span>{{ entry.message }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    <p class="muted" style="margin-top: 12px;"><a href="/logs">View all logs →</a></p>
+    {% else %}
+    <div class="empty">No log activity yet.</div>
+    {% endif %}
+</div>
+{% endblock %}

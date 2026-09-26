@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Tickets - Bot Panel{% endblock %}
+{% block content %}
+<h1>Active Tickets</h1>
+<div class="section">
+{% if tickets %}
+<table>
+    <thead>
+        <tr><th>Channel</th><th>Type</th><th>Opener</th><th>Created</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for t in tickets %}
+        <tr>
+            <td><strong>{{ t.channel_name }}</strong></td>
+            <td><span class="pill">{{ t.type_key or "?" }}</span></td>
+            <td>{% if t.creator_id %}<code>&lt;@{{ t.creator_id }}&gt;</code>{% else %}<span class="muted">unknown</span>{% endif %}</td>
+            <td class="muted">{{ t.created_at[:19] }}</td>
+            <td>
+                <a href="{{ t.jump_url }}" target="_blank"><button class="small">Open</button></a>
+                <form method="post" action="/tickets/{{ t.channel_id }}/close" style="display:inline">
+                    <button class="small danger" onclick="return confirm('Close this ticket? Transcript will be saved.')">Close</button>
+                </form>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty">No active tickets right now.</div>
+{% endif %}
+</div>
+{% endblock %}

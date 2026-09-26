@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Login - Bot Panel{% endblock %}
+{% block content %}
+<div class="login-box">
+    <h1>Bot Panel</h1>
+    {% if error == "wrong_password" %}<div class="error">Wrong password.</div>{% endif %}
+    {% if error == "panel_disabled" %}<div class="error">Panel password not configured.</div>{% endif %}
+    <form method="post" action="/login">
+        <label for="password">Password</label>
+        <input type="password" name="password" id="password" autofocus required>
+        <button type="submit">Sign in</button>
+    </form>
+</div>
+{% endblock %}

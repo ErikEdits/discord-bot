@@ -1,0 +1,60 @@
+========================================================
+  ErikEdits Discord Bot  -  Einrichtung auf dem Bot-PC
+========================================================
+
+EINMALIG (nur beim ersten Mal):
+
+1. Python installieren
+   - https://www.python.org/downloads/  ->  "Download Python"
+   - WICHTIG: im Installer unten das Haekchen setzen bei
+     "Add python.exe to PATH"
+   - Auf "Install Now" klicken, fertig.
+
+2. Diesen ganzen Ordner auf den Bot-PC kopieren
+   (z.B. nach C:\discord-bot\ - egal wohin, Hauptsache alles zusammen).
+
+3. start-bot.bat doppelklicken.
+   - Beim ersten Start installiert er automatisch alle noetigen
+     Pakete (dauert 1-2 Minuten, braucht Internet).
+   - Danach startet der Bot.
+
+
+AB DANN:
+
+- Bot starten:  start-bot.bat doppelklicken.
+- Bot stoppen:  einfach das schwarze Fenster schliessen.
+- Der Bot startet sich bei einem Absturz automatisch neu (5 Sek).
+
+- Web-Panel: im Browser  http://localhost:8080  oeffnen
+  (Passwort steht in der .env Datei als PANEL_PASSWORD)
+  Das Panel ist NUR auf diesem PC erreichbar, nicht im Internet.
+
+
+WICHTIG - der Discord-Server:
+
+- Damit der Bot dauerhaft laeuft, muss dieser PC an und das
+  start-bot.bat Fenster offen bleiben.
+- Der Bot-Token steckt in der .env Datei. Der Token wurde frueher
+  mal geteilt - falls du auf Nummer sicher gehen willst, im Discord
+  Developer Portal zuruecksetzen und in .env ersetzen.
+
+- Soll der Bot beim Hochfahren automatisch starten?
+  -> enable-autostart.bat  doppelklicken (einmalig).
+     Ab dann startet der Bot automatisch beim Windows-Login.
+  -> disable-autostart.bat doppelklicken schaltet es wieder aus.
+  Hinweis: startet beim LOGIN. Fuer einen komplett unbeaufsichtigten
+  Bot den PC auf Auto-Login stellen.
+
+
+WAS DER BOT KANN (Slash-Befehle in Discord):
+
+/setup, /update, /serverreset   - Server aufbauen / aktualisieren
+/poll create|preset|close|list  - Umfragen
+/ticket-panel, /close           - Ticketsystem
+/maintenance ...                - Features in Wartung schalten
+/warn /timeout /ban /kick /purge /warnings  - Moderation
+/modrinth-latest                - Alle Projekte + neueste Version
+/modrinth-release               - EIN Projekt auswaehlen -> neuesten Release posten
+/modrinth-check                 - Sofort nach neuen Releases suchen
+/userinfo /serverinfo /avatar /roleinfo /membercount /ping
+/backup-config                  - Server-Struktur als JSON sichern

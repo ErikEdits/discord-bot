@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Bot Panel{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if authenticated %}
+<nav>
+    <span class="brand">Bot Panel</span>
+    <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Dashboard</a>
+    <a href="/tickets" {% if request.url.path == "/tickets" %}class="active"{% endif %}>Tickets</a>
+    <a href="/warnings" {% if request.url.path == "/warnings" %}class="active"{% endif %}>Warnings</a>
+    <a href="/logs" {% if request.url.path == "/logs" %}class="active"{% endif %}>Logs</a>
+    <form action="/logout" method="post"><button class="small">Logout</button></form>
+</nav>
+{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

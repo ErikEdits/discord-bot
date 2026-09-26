@@ -1,0 +1,4 @@
+Edits Bot - Invite URL (Administrator + slash commands)
+Client ID: 1503096835609460797
+
+https://discord.com/oauth2/authorize?client_id=1503096835609460797&permissions=8&integration_type=0&scope=applications.commands+bot

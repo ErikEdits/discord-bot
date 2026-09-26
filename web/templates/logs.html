@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Logs - Bot Panel{% endblock %}
+{% block content %}
+<h1>Logs <span class="muted" style="font-size: 14px;">(last 500 lines, live)</span></h1>
+<div class="section" id="log-container">
+{% if logs %}
+    {% for entry in logs %}
+    <div class="log-line">
+        <span class="log-time" data-ts="{{ entry.time }}">{{ entry.time | round(0) | int }}</span>
+        <span class="log-level lvl-{{ entry.level }}">{{ entry.level }}</span>
+        <span>{{ entry.message }}</span>
+    </div>
+    {% endfor %}
+{% else %}
+<div class="empty">No logs yet.</div>
+{% endif %}
+</div>
+<script>
+function fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString();
+}
+document.querySelectorAll('.log-time').forEach(el => {
+    const ts = parseFloat(el.dataset.ts);
+    if (ts) el.textContent = fmtTime(ts);
+});
+
+let lastTs = 0;
+document.querySelectorAll('.log-time').forEach(el => {
+    const ts = parseFloat(el.dataset.ts);
+    if (ts > lastTs) lastTs = ts;
+});
+
+async function tick() {
+    try {
+        const res = await fetch('/api/logs?since=' + lastTs);
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('log-container');
+        for (const entry of data.entries) {
+            if (entry.time <= lastTs) continue;
+            lastTs = entry.time;
+            const line = document.createElement('div');
+            line.className = 'log-line';
+            line.innerHTML = '<span class="log-time">' + fmtTime(entry.time) + '</span>'
+                + '<span class="log-level lvl-' + entry.level + '">' + entry.level + '</span>'
+                + '<span></span>';
+            line.querySelector('span:last-child').textContent = entry.message;
+            container.insertBefore(line, container.firstChild);
+        }
+    } catch (e) {}
+}
+setInterval(tick, 3000);
+</script>
+{% endblock %}

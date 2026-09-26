@@ -1,0 +1,17 @@
+.env
+.env.example
+.git
+.gitignore
+.gitattributes
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.vscode/
+.idea/
+data/
+*.md
+invite-url.txt
+fly.toml

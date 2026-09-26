@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Warnings - Bot Panel{% endblock %}
+{% block content %}
+<h1>Warnings</h1>
+<div class="section">
+{% if warnings %}
+<table>
+    <thead>
+        <tr><th>When</th><th>User ID</th><th>Reason</th><th>Moderator</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for w in warnings %}
+        <tr>
+            <td class="muted">{{ w.timestamp[:19] }}</td>
+            <td><code>{{ w.user_id }}</code></td>
+            <td>{{ w.reason }}</td>
+            <td class="muted">{{ w.moderator }}</td>
+            <td>
+                <form method="post" action="/warnings/{{ w.guild_id }}/{{ w.user_id }}/{{ w.warn_id }}/delete" style="display:inline">
+                    <button class="small danger" onclick="return confirm('Delete this warning?')">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty">No warnings on record.</div>
+{% endif %}
+</div>
+{% endblock %}

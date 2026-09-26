@@ -1,0 +1,37 @@
+# Fly.io config for the Discord bot + panel.
+# Rename `app` below to something unique before `fly launch`.
+
+app = "erikedits-bot"
+primary_region = "fra"   # Frankfurt - low latency for DE
+
+[build]
+
+[env]
+  PANEL_HOST = "0.0.0.0"
+  PANEL_PORT = "8080"
+  PANEL_ENABLED = "true"
+  SETUP_THROTTLE_SECONDS = "0.6"
+  LOW_POWER = "false"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+# Persistent volume so warnings.json / tickets.json survive deploys.
+# Create once: fly volumes create bot_data --size 1 --region fra
+[[mounts]]
+  source = "bot_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

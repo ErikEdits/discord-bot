@@ -1,0 +1,206 @@
+/* Discord-ish dark theme for the bot panel. */
+:root {
+    --bg: #1e1f22;
+    --bg-2: #2b2d31;
+    --bg-3: #383a40;
+    --border: #3f4147;
+    --text: #dbdee1;
+    --muted: #949ba4;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --success: #23a55a;
+    --danger: #f23f43;
+    --warn: #f0b132;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+nav {
+    background: var(--bg-2);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    border-bottom: 1px solid var(--border);
+}
+
+nav .brand {
+    font-weight: 600;
+    color: var(--text);
+    margin-right: auto;
+}
+
+nav a {
+    padding: 6px 10px;
+    border-radius: 4px;
+    color: var(--text);
+}
+
+nav a:hover { background: var(--bg-3); text-decoration: none; }
+nav a.active { background: var(--accent); color: white; }
+
+nav form { margin: 0; }
+
+main {
+    max-width: 1200px;
+    margin: 24px auto;
+    padding: 0 24px;
+}
+
+h1, h2, h3 { color: var(--text); margin-top: 0; }
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.card {
+    background: var(--bg-2);
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
+.card .label {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.card .value {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+.section {
+    background: var(--bg-2);
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+tbody tr:hover { background: var(--bg-3); }
+
+button, input[type="submit"] {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+button:hover, input[type="submit"]:hover { background: var(--accent-hover); }
+button.danger { background: var(--danger); }
+button.danger:hover { background: #c63239; }
+button.small { padding: 4px 10px; font-size: 12px; }
+
+input[type="text"], input[type="password"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 4px;
+    width: 100%;
+    font-size: 14px;
+}
+input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+
+.login-box {
+    max-width: 360px;
+    margin: 80px auto;
+    background: var(--bg-2);
+    padding: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
+.login-box h1 { margin-bottom: 24px; font-size: 20px; }
+.login-box label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.login-box .error { background: rgba(242,63,67,0.1); color: var(--danger); padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 13px; }
+.login-box button { width: 100%; margin-top: 16px; padding: 10px; }
+
+.log-line { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.log-time { color: var(--muted); margin-right: 8px; }
+.log-level { display: inline-block; min-width: 60px; padding: 0 6px; border-radius: 3px; font-weight: 600; margin-right: 8px; font-size: 11px; }
+.lvl-INFO { background: var(--accent); color: white; }
+.lvl-WARNING { background: var(--warn); color: black; }
+.lvl-ERROR { background: var(--danger); color: white; }
+.lvl-DEBUG { background: var(--bg-3); color: var(--muted); }
+
+.muted { color: var(--muted); }
+.pill { display: inline-block; padding: 2px 8px; background: var(--bg-3); border-radius: 10px; font-size: 11px; color: var(--muted); }
+.empty { padding: 32px; text-align: center; color: var(--muted); }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.online { background: var(--success); }
+.dot.offline { background: var(--muted); }
+
+/* Live system stat bars */
+.bar-wrap {
+    margin-top: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    height: 8px;
+    overflow: hidden;
+}
+.bar-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease, background-color 0.4s ease;
+}
+.bar-fill.warn { background: var(--warn); }
+.bar-fill.crit { background: var(--danger); }
+
+.live-pulse {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 5px;
+    animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.section h3 .live-label {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 400;
+    margin-left: 8px;
+}

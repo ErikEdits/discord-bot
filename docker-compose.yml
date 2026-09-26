@@ -1,0 +1,20 @@
+services:
+  bot:
+    build: .
+    container_name: discord-bot
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Bind only to the server's localhost. The panel is NOT reachable from the
+      # internet — access it via an SSH tunnel:
+      #   ssh -L 8080:localhost:8080 root@185.233.107.234
+      # then open http://localhost:8080 in your browser.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+    logging:
+      # Cap log growth so scanner noise / chatter can't fill the disk.
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
