@@ -17,10 +17,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -240,10 +242,179 @@ class ModDownloadSelect(discord.ui.Select):
             log.exception("Failed to send download embed")
 
 
+# ---------------------------------------------------------------------------
+# "Filter by Minecraft version" -> loader -> matching file for every mod
+# ---------------------------------------------------------------------------
+
+_RELEASE_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)?$")
+LOADER_LABELS = {
+    "fabric": "Fabric", "forge": "Forge", "neoforge": "NeoForge", "quilt": "Quilt",
+    "minecraft": "Vanilla / Resource pack", "datapack": "Data pack", "iris": "Iris",
+    "optifine": "OptiFine", "paper": "Paper", "spigot": "Spigot", "bukkit": "Bukkit",
+}
+_FILTER_CACHE: dict[tuple[str, str, str], tuple[float, dict | None]] = {}
+_FILTER_CACHE_SECONDS = 600
+
+
+def _filter_config() -> dict:
+    return SERVER_TEMPLATE.get("download_filter", {})
+
+
+def _version_key(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
+def collect_game_versions(mods: list[dict]) -> list[str]:
+    """All Minecraft versions supported by any of the mods, newest first."""
+    include_snapshots = _filter_config().get("include_snapshots", False)
+    versions = set()
+    for mod in mods or []:
+        for v in mod.get("game_versions") or mod.get("versions") or []:
+            if include_snapshots or _RELEASE_VERSION.match(v):
+                versions.add(v)
+    ordered = sorted(versions, key=_version_key, reverse=True)
+    return ordered[: int(_filter_config().get("max_versions", 25))]
+
+
+def _mod_supports(mod: dict, game_version: str, loader: str | None = None) -> bool:
+    if game_version not in (mod.get("game_versions") or mod.get("versions") or []):
+        return False
+    return loader is None or loader in (mod.get("loaders") or [])
+
+
+async def _latest_matching_version(session: aiohttp.ClientSession, project_id: str,
+                                   game_version: str, loader: str) -> dict | None:
+    key = (project_id, game_version, loader)
+    cached = _FILTER_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < _FILTER_CACHE_SECONDS:
+        return cached[1]
+    url = (f"{API_BASE}/project/{project_id}/version"
+           f"?loaders={quote(json.dumps([loader]))}&game_versions={quote(json.dumps([game_version]))}")
+    versions = await _fetch(session, url) or []
+    versions.sort(key=lambda v: v.get("date_published", ""), reverse=True)
+    best = versions[0] if versions else None
+    _FILTER_CACHE[key] = (time.monotonic(), best)
+    return best
+
+
+async def build_filtered_downloads_embed(mods: list[dict], game_version: str, loader: str) -> discord.Embed:
+    loader_name = LOADER_LABELS.get(loader, loader.title())
+    embed = discord.Embed(
+        title=f"Downloads for Minecraft {game_version} \u00b7 {loader_name}",
+        color=0x1BD96A,
+        timestamp=datetime.now(timezone.utc),
+    )
+    missing = []
+    found = 0
+    async with aiohttp.ClientSession() as session:
+        for mod in mods:
+            if not _mod_supports(mod, game_version, loader):
+                missing.append(mod.get("title", "?"))
+                continue
+            version = await _latest_matching_version(session, mod.get("id") or mod.get("project_id"), game_version, loader)
+            if not version:
+                missing.append(mod.get("title", "?"))
+                continue
+            files = version.get("files") or []
+            primary = next((f for f in files if f.get("primary")), files[0] if files else None)
+            if primary is None:
+                missing.append(mod.get("title", "?"))
+                continue
+            page = f"https://modrinth.com/{mod.get('project_type', 'mod')}/{mod.get('slug')}/version/{version.get('id')}"
+            size_kb = primary.get("size", 0) // 1024
+            embed.add_field(
+                name=f"{mod.get('title', 'Unknown')} {version.get('version_number', '')}"[:256],
+                value=f"\u2B07\uFE0F [{primary['filename']}]({primary['url']}) ({size_kb} KB) \u00b7 [page]({page})"[:1024],
+                inline=False,
+            )
+            found += 1
+            if found >= 20:
+                break
+    if missing:
+        embed.add_field(
+            name=f"Not available for {game_version} {loader_name}",
+            value=", ".join(missing)[:1024],
+            inline=False,
+        )
+    if not found:
+        embed.description = "None of the mods has a file for this combination yet."
+    embed.set_footer(text="Newest matching version per mod \u00b7 from Modrinth")
+    return embed
+
+
+class LoaderButton(discord.ui.Button):
+    def __init__(self, loader: str, game_version: str, mods: list[dict]):
+        emoji = LOADER_EMOJI.get(loader)
+        super().__init__(label=LOADER_LABELS.get(loader, loader.title()), emoji=emoji,
+                         style=discord.ButtonStyle.primary)
+        self.loader = loader
+        self.game_version = game_version
+        self.mods = mods
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await build_filtered_downloads_embed(self.mods, self.game_version, self.loader)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class LoaderPickView(discord.ui.View):
+    def __init__(self, game_version: str, mods: list[dict], loaders: list[str]):
+        super().__init__(timeout=300)
+        for loader in loaders[:25]:
+            self.add_item(LoaderButton(loader, game_version, mods))
+
+
+class VersionFilterSelect(discord.ui.Select):
+    """Persistent menu on the download panel: pick a Minecraft version first."""
+
+    def __init__(self, mods: list[dict] | None = None):
+        versions = collect_game_versions(mods or [])
+        options = [discord.SelectOption(label=f"Minecraft {v}", value=v) for v in versions]
+        if not options:
+            options = [discord.SelectOption(label="No versions found", value="__none__")]
+        super().__init__(
+            placeholder="...or filter by Minecraft version",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="modrinth:version_filter",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        from cogs.maintenance import is_under_maintenance, get_maintenance_message
+        if is_under_maintenance("moddownload"):
+            await interaction.response.send_message(f"\U0001F527 {get_maintenance_message('moddownload')}", ephemeral=True)
+            return
+        game_version = self.values[0]
+        if game_version == "__none__":
+            await interaction.response.send_message("No versions available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        mods = await _fetch_user_projects(_config().get("username", "")) or []
+        matching = [m for m in mods if _mod_supports(m, game_version)]
+        loaders = sorted({l for m in matching for l in (m.get("loaders") or [])},
+                         key=lambda l: list(LOADER_LABELS).index(l) if l in LOADER_LABELS else 99)
+        if not loaders:
+            await interaction.followup.send(f"No mod supports Minecraft {game_version} yet.", ephemeral=True)
+            return
+        if len(loaders) == 1:
+            embed = await build_filtered_downloads_embed(mods, game_version, loaders[0])
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"**Minecraft {game_version}** - which mod loader do you use?",
+            view=LoaderPickView(game_version, mods, loaders),
+            ephemeral=True,
+        )
+
+
 class ModDownloadView(discord.ui.View):
     def __init__(self, mods: list[dict] | None = None):
         super().__init__(timeout=None)
         self.add_item(ModDownloadSelect(mods))
+        if _filter_config().get("enabled", True):
+            self.add_item(VersionFilterSelect(mods))
 
 
 class Modrinth(commands.Cog):

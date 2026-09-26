@@ -208,6 +208,9 @@ async def _archive_and_delete(channel: discord.TextChannel, closer: discord.abc.
     except discord.NotFound:
         return  # already closed by a second click - that call asks for the rating
 
+    from cogs.stats import record_event
+    record_event(guild.id, "tickets_closed")
+
     creator_id, _type_key = _parse_topic(channel)
     if creator_id and _config().get("rating_enabled", True):
         await _ask_for_rating(guild, creator_id, channel.name)
@@ -261,6 +264,8 @@ class RateButton(discord.ui.DynamicItem[discord.ui.Button],
             ),
             view=None,
         )
+        from cogs.stats import record_rating
+        record_rating(self.guild_id, self.stars)
         guild = interaction.client.get_guild(self.guild_id)
         if guild is None:
             return
@@ -380,6 +385,8 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str) -> None:
     await interaction.response.send_message(
         f"Ticket created: {ticket_channel.mention}", ephemeral=True
     )
+    from cogs.stats import record_event
+    record_event(guild.id, "tickets_opened")
 
 
 class OpenTicketButton(discord.ui.Button):
@@ -467,6 +474,8 @@ async def _do_claim(interaction: discord.Interaction) -> None:
         await channel.send(f"\U0001F64B {interaction.user.mention} is taking care of this ticket.")
     else:
         await interaction.response.send_message(f"\U0001F64B {interaction.user.mention} is taking care of this ticket.")
+    from cogs.stats import record_claim
+    record_claim(channel.guild.id, interaction.user)
     log.info("Ticket %s claimed by %s", channel.name, interaction.user)
 
 

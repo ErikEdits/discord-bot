@@ -19,7 +19,7 @@ goto no_python
 
 :have_python
 REM --- 2) Install dependencies only if something is missing ---
-%PY% -c "import discord, fastapi, uvicorn, jinja2, psutil, aiohttp, dotenv, zoneinfo; discord.ui.DynamicItem; zoneinfo.ZoneInfo('Europe/Berlin')" >nul 2>nul
+%PY% -c "import discord, fastapi, uvicorn, jinja2, psutil, aiohttp, dotenv, zoneinfo, PIL; discord.ui.DynamicItem; zoneinfo.ZoneInfo('Europe/Berlin')" >nul 2>nul
 if %errorlevel% equ 0 goto run
 echo.
 echo ============================================================

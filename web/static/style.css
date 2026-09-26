@@ -127,7 +127,7 @@ button.danger { background: var(--danger); }
 button.danger:hover { background: #c63239; }
 button.small { padding: 4px 10px; font-size: 12px; }
 
-input[type="text"], input[type="password"], input[type="number"], select, textarea {
+input[type="text"], input[type="password"], input[type="number"], input[type="datetime-local"], select, textarea {
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);

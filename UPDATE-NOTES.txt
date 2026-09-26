@@ -1,4 +1,90 @@
 ============================================================
+ BOT UPDATE 2 - 7 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) Den data-Ordner und die .env aus dem alten Bot-Ordner behalten
+   bzw. in den neuen Ordner kopieren (nicht auf GitHub, absichtlich).
+2) Bot neu starten - requirements.txt hat Pillow dazubekommen
+   (fuer das Willkommensbild). start-bot.bat installiert es selbst.
+3) In Discord /update ausfuehren. Das legt an:
+   - #🗺-roadmap           (Info-Bereich, nur lesen)
+   - #🧪-beta-program      (Info-Bereich, Panel mit Apply-Button)
+   - #🧪-beta-testing      (nur Beta Tester + Staff)
+   - #📝-beta-applications (Staff-Bereich, Bewerbungen)
+   - Voice "➕ Create Voice" (ganz oben im Voice-Bereich)
+   - Rolle "Beta Tester"
+   und aktualisiert das Mod-Download-Panel (neues Versions-Menue).
+4) Roadmap-Webhook holen: /roadmap webhook  (nur Admin, geheim halten)
+
+
+WAS IST NEU
+-----------
+ 1. DOWNLOAD-MENUE MIT VERSIONSFILTER
+    - Im Mod-Download-Panel gibt es ein zweites Menue
+      "filter by Minecraft version"
+    - Version waehlen -> Loader waehlen (Fabric/Forge/NeoForge/...)
+      -> fuer JEDEN Mod die passende Datei mit Direkt-Link
+    - Mods, die es fuer die Kombination nicht gibt, werden genannt
+
+ 3. BETA-TESTER-PROGRAMM (nur Admin)
+    - /beta open dauer:7d [slots:10]   Bewerbungen fuer einen
+                                        Zeitraum oeffnen
+    - /beta close, /beta status, /beta remove @user, /beta panel
+    - Nur waehrend der Zeitraum offen ist, funktioniert "Apply"
+      in #🧪-beta-program (Formular: MC-Version, Loader, warum,
+      Erfahrung)
+    - Bewerbungen landen in #📝-beta-applications, Accept/Reject
+      koennen NUR Leute mit Administrator-Berechtigung druecken
+    - Angenommen -> Rolle "Beta Tester" + DM, Zugang zu
+      #🧪-beta-testing. Abgelehnt -> DM (optional mit Grund)
+    - Schliesst automatisch am Ende oder wenn alle Plaetze voll sind
+
+ 4. GEPLANTE ANKUENDIGUNGEN (nur Admin)
+    - /schedule create channel wann [ping]  -> Formular fuer Titel+Text
+      "wann": 2026-10-01 18:00, 01.10. 18:00, 18:00 oder 2h / 3d
+    - /schedule list, /schedule edit, /schedule delete
+    - Im Web-Panel: Seite "Scheduled" (erstellen, bearbeiten, loeschen)
+    - Zeitzone Europe/Berlin
+
+ 5. STATISTIK-SEITE IM WEB-PANEL ("Stats")
+    - Mitglieder im Verlauf, Beitritte/Austritte, Nachrichten pro Tag,
+      Tickets pro Woche, aktivste Channels, Ticket-Bewertungen,
+      wer die meisten Tickets uebernommen hat, Top-Levels
+    - Zeitraum 7 / 30 / 90 / 180 Tage, Tabellenansicht unter jedem
+      Diagramm
+    - Gezaehlt wird ab jetzt (nur Zahlen, nie Nachrichteninhalte)
+
+ 6. ROADMAP PRO MOD
+    - #🗺-roadmap: ein Embed pro Mod mit Planned / In progress / Done,
+      Punkte sind nummeriert
+    - Admin-Befehle: /roadmap add, move, remove, delete-mod, refresh
+    - /roadmap webhook zeigt eine Webhook-URL fuer den Channel.
+      Damit kannst du (oder Claude Code / ein Script) von ueberall
+      posten. Normale Nachrichten erscheinen einfach im Channel,
+      Zeilen die mit "roadmap" anfangen sind Befehle:
+        roadmap add SmiteMod | planned | Config screen
+        roadmap move SmiteMod | #2 | done
+        roadmap remove SmiteMod | Config screen
+        roadmap delete SmiteMod
+      Beispiel:
+        curl -H "Content-Type: application/json" -d "{\"content\": \"roadmap add SmiteMod | progress | 1.21.2 port\"}" <URL>
+    - URL geleakt? /roadmap webhook regenerate:True
+
+ 7. EIGENE VOICE-CHANNELS ("Join to Create")
+    - "➕ Create Voice" betreten -> eigener Channel, man wird
+      reingezogen. Leer -> wird geloescht.
+    - /vc name, /vc limit, /vc lock, /vc unlock, /vc allow,
+      /vc kick, /vc transfer (nur der Besitzer)
+    - Geht der Besitzer, bekommt jemand anderes im Channel ihn
+
+10. WILLKOMMENSBILD
+    - Bei jedem Beitritt ein Bild mit dem Profilbild des Users,
+      Name und "Member #342" in #👋-welcome
+
+
+============================================================
  BOT UPDATE - 14 neue Features
 ============================================================
 

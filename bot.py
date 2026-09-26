@@ -219,9 +219,13 @@ if LOW_POWER:
         "cogs.community",
         "cogs.reminders",
         "cogs.giveaway",
+        "cogs.beta",
+        "cogs.scheduler",
+        "cogs.roadmap",
+        "cogs.temp_voice",
     )
     log.info("LOW_POWER mode: skipping logging, anti-spam, link filter, modrinth, mod stats, welcome DM, "
-             "crash analyzer, levels and member counter (background-heavy)")
+             "welcome image, crash analyzer, levels, stats and member counter (background-heavy)")
 else:
     EXTENSIONS = (
         "cogs.settings",
@@ -243,6 +247,12 @@ else:
         "cogs.giveaway",
         "cogs.reminders",
         "cogs.member_counter",
+        "cogs.beta",
+        "cogs.scheduler",
+        "cogs.stats",
+        "cogs.roadmap",
+        "cogs.temp_voice",
+        "cogs.welcome_image",
     )
 
 
@@ -891,8 +901,10 @@ def build_mod_download_panel(template, mods):
     embed = discord.Embed(
         title="Download my mods",
         description=(
-            f"Pick a mod from the dropdown below to get a **direct download link** "
+            f"Pick a mod from the first dropdown to get a **direct download link** "
             f"to its latest version.\n\n"
+            f"Or pick your **Minecraft version** in the second dropdown and then your loader - "
+            f"you'll get the right file of every mod for exactly that setup.\n\n"
             f"All projects: https://modrinth.com/user/{config['username']}"
         ),
         color=0x1bd96a,
@@ -955,6 +967,29 @@ async def post_crash_panel(guild, template, bot_user):
         return True
     except Exception:
         log.exception("Failed to post crash analyzer panel")
+        return False
+
+
+def build_beta_panel(template):
+    if not template.get("beta", {}).get("enabled") or "cogs.beta" not in bot.extensions:
+        return None, None
+    from cogs.beta import BetaPanelView, build_panel_embed
+    return build_panel_embed(), BetaPanelView()
+
+
+async def post_beta_panel(guild, template, bot_user):
+    channel = discord.utils.get(guild.text_channels, name=CHANNELS.get("beta_program", ""))
+    if channel is None:
+        return False
+    embed, view = build_beta_panel(template)
+    if embed is None or await channel_has_bot_messages(channel, bot_user):
+        return False
+    try:
+        await channel.send(embed=embed, view=view)
+        log.info("Posted beta panel to #%s", channel.name)
+        return True
+    except Exception:
+        log.exception("Failed to post beta panel")
         return False
 
 
@@ -1102,6 +1137,12 @@ async def refresh_panels(guild, template, bot_user):
         results["crash_panel"] = await refresh_or_post(crash_ch, bot_user, embed, view)
         await throttle()
 
+    beta_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("beta_program", ""))
+    embed, view = build_beta_panel(template)
+    if beta_ch and embed is not None:
+        results["beta_panel"] = await refresh_or_post(beta_ch, bot_user, embed, view)
+        await throttle()
+
     config = template.get("modrinth", {})
     downloads_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("mod_downloads", ""))
     if downloads_ch and config.get("enabled") and config.get("username"):
@@ -1195,6 +1236,7 @@ async def setup_cmd(interaction: discord.Interaction):
     ticket_panel_posted = await post_ticket_panel(guild, SERVER_TEMPLATE, bot.user)
     mod_download_posted = await post_mod_download_panel(guild, SERVER_TEMPLATE, bot.user)
     crash_panel_posted = await post_crash_panel(guild, SERVER_TEMPLATE, bot.user)
+    beta_panel_posted = await post_beta_panel(guild, SERVER_TEMPLATE, bot.user)
     counter_state = await ensure_member_counter(guild)
     welcome_screen_set = await configure_welcome_screen(guild, SERVER_TEMPLATE)
     onboarding_set = await configure_onboarding(guild, SERVER_TEMPLATE, role_lookup)
@@ -1210,6 +1252,7 @@ async def setup_cmd(interaction: discord.Interaction):
         f"- Ticket panel: **{'posted to #' + CHANNELS['tickets'] if ticket_panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Mod-download panel: **{'posted to #' + CHANNELS['mod_downloads'] if mod_download_posted else 'skipped (already exists or channel missing)'}**",
         f"- Crash-analyzer panel: **{'posted to #' + CHANNELS['crash_analyzer'] if crash_panel_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Beta panel: **{'posted to #' + CHANNELS['beta_program'] if beta_panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Member counter: **{counter_state}**",
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped (needs Community Server)'}**",
         f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (Discord requirements not met - see log)'}**",

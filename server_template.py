@@ -17,6 +17,10 @@ CHANNELS = {
     "mod_downloads":   "\U0001F4E6-mod-downloads",
     "mod_stats":       "\U0001F4C8-mod-stats",
     "crash_analyzer":  "\U0001F50D-crash-analyzer",
+    "roadmap":         "\U0001F5FA-roadmap",
+    "beta_program":    "\U0001F9EA-beta-program",
+    "beta_testing":    "\U0001F9EA-beta-testing",
+    "beta_applications": "\U0001F4DD-beta-applications",
     "general":         "\U0001F4AC-general",
     "introductions":   "\U0001F64B-introductions",
     "off_topic":       "\U0001F3B2-off-topic",
@@ -45,6 +49,7 @@ CHANNELS = {
     "chill_vc":        "\U0001F319 Chill",
     "study_vc":        "\U0001F4DA Study Hall",
     "afk_vc":          "\U0001F4A4 AFK",
+    "create_vc":       "\u2795 Create Voice",
 }
 
 
@@ -78,6 +83,7 @@ SERVER_TEMPLATE = {
              "use_application_commands": True, "create_public_threads": True,
              "send_messages_in_threads": True,
          }},
+        {"name": "Beta Tester", "color": "0x1ABC9C", "hoist": True,  "mentionable": True,  "permissions": {}},
         {"name": "Member",     "color": "0x2ECC71", "hoist": True,  "mentionable": False,
          "permissions": {
              "view_channel": True, "send_messages": True, "embed_links": True,
@@ -152,6 +158,14 @@ SERVER_TEMPLATE = {
                  "overwrites": {
                      "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
                  }},
+                {"name": CHANNELS["roadmap"],         "type": "text", "topic": "What's planned, in progress and done for each mod.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": True},
+                 }},
+                {"name": CHANNELS["beta_program"],    "type": "text", "topic": "Apply to become a beta tester while applications are open.",
+                 "overwrites": {
+                     "@everyone": {"view_channel": True, "send_messages": False, "read_message_history": True, "add_reactions": False},
+                 }},
             ],
         },
         {
@@ -200,6 +214,17 @@ SERVER_TEMPLATE = {
                      "Owner":     {"view_channel": True, "send_messages": True,  "read_message_history": True, "manage_messages": True},
                  }},
                 {"name": CHANNELS["art"],          "type": "text",  "topic": "Show off your creative work.", "slowmode": 15},
+                {"name": CHANNELS["beta_testing"], "type": "text",  "topic": "Beta builds, test instructions and feedback - beta testers only.",
+                 "overwrites": {
+                     "@everyone":   {"view_channel": False},
+                     "Member":      {"view_channel": False},
+                     "VIP":         {"view_channel": False},
+                     "Beta Tester": {"view_channel": True, "send_messages": True, "read_message_history": True, "attach_files": True, "embed_links": True, "add_reactions": True},
+                     "Moderator":   {"view_channel": True, "send_messages": True, "read_message_history": True, "manage_messages": True},
+                     "Admin":       {"view_channel": True, "send_messages": True, "read_message_history": True, "manage_messages": True},
+                     "Owner":       {"view_channel": True, "send_messages": True, "read_message_history": True, "manage_messages": True},
+                     "Muted":       {"send_messages": False, "add_reactions": False},
+                 }},
                 {"name": CHANNELS["mod_support"],  "type": "forum", "topic": "Get help with the mods. Open a post per question."},
             ],
         },
@@ -215,6 +240,7 @@ SERVER_TEMPLATE = {
                 "Muted":     {"speak": False, "stream": False, "send_messages": False},
             },
             "channels": [
+                {"name": CHANNELS["create_vc"],  "type": "voice"},
                 {"name": CHANNELS["general_vc"], "type": "voice"},
                 {"name": CHANNELS["gaming_vc"],  "type": "voice", "user_limit": 6},
                 {"name": CHANNELS["music_vc"],   "type": "voice", "user_limit": 10},
@@ -240,6 +266,7 @@ SERVER_TEMPLATE = {
                      "Admin":     {"view_channel": True, "send_messages": True, "read_message_history": True},
                      "Owner":     {"view_channel": True, "send_messages": True, "read_message_history": True},
                  }},
+                {"name": CHANNELS["beta_applications"], "type": "text", "topic": "Beta tester applications. Only administrators can accept or reject."},
                 {"name": CHANNELS["staff_vc"], "type": "voice"},
             ],
         },
@@ -541,6 +568,53 @@ SERVER_TEMPLATE = {
     "reminders": {
         "max_per_user": 25,
         "max_days": 365,
+    },
+
+    # Download panel: "Filter by Minecraft version" menu -> loader -> matching files.
+    "download_filter": {
+        "enabled": True,
+        "max_versions": 25,           # Discord allows 25 entries in a menu
+        "include_snapshots": False,
+    },
+
+    # Beta tester program. Admins open applications for a time window with
+    # /beta open; the panel in CHANNELS["beta_program"] then shows an Apply button.
+    "beta": {
+        "enabled": True,
+        "role": "Beta Tester",
+        "applications_channel": CHANNELS["beta_applications"],
+        "testing_channel": CHANNELS["beta_testing"],
+    },
+
+    # Scheduled announcements (/schedule and the web panel).
+    "scheduled_announcements": {
+        "timezone": "Europe/Berlin",
+    },
+
+    # Roadmap embeds in CHANNELS["roadmap"], one per mod. Also accepts commands sent
+    # through the channel webhook (see /roadmap webhook), e.g. from scripts.
+    "roadmap": {
+        "enabled": True,
+        "max_done_shown": 10,
+    },
+
+    # Join-to-create voice: joining CHANNELS["create_vc"] creates your own channel.
+    "temp_voice": {
+        "enabled": True,
+        "name_format": "\U0001F50A {user}'s channel",
+        "default_limit": 0,           # 0 = unlimited
+    },
+
+    # Welcome image with the member's avatar, posted in CHANNELS["welcome"].
+    "welcome_image": {
+        "enabled": True,
+        "accent_color": "0x5865F2",
+    },
+
+    # Statistics for the web panel (members, messages, tickets). Kept for N days.
+    "stats": {
+        "enabled": True,
+        "keep_days": 180,
     },
 
     # Automatic backups of the bot data (warnings, levels, FAQs, ...) and the server

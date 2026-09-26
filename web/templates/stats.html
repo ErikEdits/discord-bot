@@ -1,0 +1,421 @@
+{% extends "base.html" %}
+{% block title %}Stats - Bot Panel{% endblock %}
+{% block content %}
+<style>
+.viz-root {
+    color-scheme: dark;
+    --surface-1: #2b2d31;
+    --text-primary: #dbdee1;
+    --text-secondary: #b5bac1;
+    --text-muted: #949ba4;
+    --grid: #383a40;
+    --axis: #4e5058;
+    --series-1: #3987e5;   /* blue */
+    --series-2: #d95926;   /* orange */
+}
+.viz-filters { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
+.viz-filters label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.viz-filters select { width: auto; min-width: 160px; }
+.viz-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.viz-tile { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.viz-tile .label { color: var(--text-muted); font-size: 12px; margin-bottom: 6px; }
+.viz-tile .value { font-size: 26px; font-weight: 600; color: var(--text-primary); }
+.viz-tile .sub { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; }
+@media (max-width: 560px) { .viz-grid { grid-template-columns: 1fr; } }
+.viz-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+.viz-card h3 { font-size: 15px; margin: 0 0 2px 0; }
+.viz-card .subtitle { color: var(--text-muted); font-size: 12px; margin-bottom: 10px; }
+.viz-chart { position: relative; width: 100%; }
+.viz-chart svg { display: block; width: 100%; overflow: visible; }
+.viz-chart text { fill: var(--text-muted); font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.viz-chart .value-label { fill: var(--text-secondary); }
+.viz-legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.viz-legend .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.viz-tooltip { position: absolute; pointer-events: none; background: #111214; border: 1px solid var(--border); border-radius: 6px;
+               padding: 6px 10px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; z-index: 5; display: none; }
+.viz-tooltip .row { display: flex; align-items: center; gap: 6px; }
+.viz-tooltip .line-key { display: inline-block; width: 12px; height: 2px; border-radius: 1px; }
+.viz-tooltip strong { color: var(--text-primary); }
+.viz-empty { color: var(--text-muted); padding: 40px 0; text-align: center; }
+.viz-card details { margin-top: 8px; font-size: 12px; }
+.viz-card details summary { color: var(--text-muted); cursor: pointer; }
+.viz-card details table { margin-top: 6px; }
+.viz-card details td, .viz-card details th { padding: 4px 8px; font-variant-numeric: tabular-nums; }
+.viz-card details .scroll { max-height: 220px; overflow-y: auto; }
+.bar:hover, .bar.hover { filter: brightness(1.2); }
+</style>
+
+<h1>Stats{% if payload.guild_name %} <span class="muted" style="font-size: 16px">{{ payload.guild_name }}</span>{% endif %}</h1>
+
+<div class="viz-root">
+    <div class="viz-filters">
+        <div>
+            <label for="range">Time range</label>
+            <select id="range">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="180">Last 180 days</option>
+            </select>
+        </div>
+        {% if guilds|length > 1 %}
+        <div>
+            <label for="guild">Server</label>
+            <select id="guild" onchange="location.href='/stats?guild=' + this.value">
+                {% for g in guilds %}<option value="{{ g.id }}" {% if selected_guild == g.id|string %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+            </select>
+        </div>
+        {% endif %}
+        <div class="muted" style="font-size: 12px">Statistics are collected since this feature was installed.</div>
+    </div>
+
+    <div class="viz-tiles">
+        <div class="viz-tile"><div class="label">Members</div><div class="value" id="tile-members">-</div><div class="sub" id="tile-members-sub"></div></div>
+        <div class="viz-tile"><div class="label">Messages</div><div class="value" id="tile-messages">-</div><div class="sub" id="tile-messages-sub"></div></div>
+        <div class="viz-tile"><div class="label">Tickets opened</div><div class="value" id="tile-tickets">-</div><div class="sub" id="tile-tickets-sub"></div></div>
+        <div class="viz-tile"><div class="label">Ticket rating</div><div class="value" id="tile-rating">-</div><div class="sub" id="tile-rating-sub"></div></div>
+    </div>
+
+    <div class="viz-grid">
+        <div class="viz-card">
+            <h3>Members</h3><div class="subtitle">Member count at the end of each day</div>
+            <div class="viz-chart" id="chart-members"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-members"></div></details>
+        </div>
+        <div class="viz-card">
+            <h3>Joins and leaves</h3><div class="subtitle per-unit">Per day</div>
+            <div class="viz-legend"><span><span class="key" style="background: var(--series-1)"></span>Joins</span><span><span class="key" style="background: var(--series-2)"></span>Leaves</span></div>
+            <div class="viz-chart" id="chart-joins"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-joins"></div></details>
+        </div>
+        <div class="viz-card">
+            <h3>Messages</h3><div class="subtitle"><span class="per-unit">Per day</span> · bots not counted</div>
+            <div class="viz-chart" id="chart-messages"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-messages"></div></details>
+        </div>
+        <div class="viz-card">
+            <h3>Tickets</h3><div class="subtitle">Tickets opened per week</div>
+            <div class="viz-chart" id="chart-tickets"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-tickets"></div></details>
+        </div>
+        <div class="viz-card">
+            <h3>Most active channels</h3><div class="subtitle">Messages in the selected time range</div>
+            <div class="viz-chart" id="chart-channels"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-channels"></div></details>
+        </div>
+        <div class="viz-card">
+            <h3>Ticket ratings</h3><div class="subtitle">Ratings in the selected time range</div>
+            <div class="viz-chart" id="chart-ratings"></div>
+            <details><summary>Show table</summary><div class="scroll" id="table-ratings"></div></details>
+        </div>
+    </div>
+
+    <div class="viz-grid" style="margin-top: 16px">
+        <div class="viz-card">
+            <h3>Top ticket helpers</h3><div class="subtitle">Tickets claimed (all time)</div>
+            {% if payload.claims %}
+            <table>
+                <thead><tr><th>#</th><th>Staff member</th><th style="text-align:right">Tickets</th></tr></thead>
+                <tbody>{% for c in payload.claims %}<tr><td class="muted">{{ loop.index }}</td><td>{{ c.name }}</td><td style="text-align:right">{{ c.count }}</td></tr>{% endfor %}</tbody>
+            </table>
+            {% else %}<div class="viz-empty">No tickets claimed yet.</div>{% endif %}
+        </div>
+        <div class="viz-card">
+            <h3>Top levels</h3><div class="subtitle">Highest XP</div>
+            {% if payload.levels %}
+            <table>
+                <thead><tr><th>#</th><th>Member</th><th style="text-align:right">Level</th><th style="text-align:right">XP</th></tr></thead>
+                <tbody>{% for l in payload.levels %}<tr><td class="muted">{{ loop.index }}</td><td>{{ l.name }}</td><td style="text-align:right">{{ l.level }}</td><td style="text-align:right">{{ "{:,}".format(l.xp) }}</td></tr>{% endfor %}</tbody>
+            </table>
+            {% else %}<div class="viz-empty">Nobody has XP yet.</div>{% endif %}
+        </div>
+    </div>
+</div>
+
+<script id="stats-data" type="application/json">{{ payload | tojson }}</script>
+<script>
+(function () {
+    const DATA = JSON.parse(document.getElementById('stats-data').textContent);
+    const NS = 'http://www.w3.org/2000/svg';
+    const css = getComputedStyle(document.querySelector('.viz-root'));
+    const C = (name) => css.getPropertyValue(name).trim();
+    const fmt = (n) => (n === null || n === undefined) ? '–' : Number(n).toLocaleString('en-US');
+    const shortDate = (iso) => { const [y, m, d] = iso.split('-'); return `${d}.${m}.`; };
+
+    function el(tag, attrs, parent) {
+        const e = document.createElementNS(NS, tag);
+        for (const k in attrs) e.setAttribute(k, attrs[k]);
+        if (parent) parent.appendChild(e);
+        return e;
+    }
+    // Whole-number tick step (1, 2, 5, 10, 20, 50, ...) so axis labels are never fractional.
+    function niceStep(raw) {
+        if (raw <= 1) return 1;
+        const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+        for (const m of [1, 2, 5, 10]) if (m * pow >= raw) return m * pow;
+        return 10 * pow;
+    }
+    // Column with a 4px rounded data-end and a square baseline.
+    function columnPath(x, y, w, h) {
+        const r = Math.min(4, w / 2, h);
+        return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+    }
+    function barPath(x, y, w, h) {  // horizontal bar, rounded at the right end
+        const r = Math.min(4, h / 2, w);
+        return `M${x},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h - r}Q${x + w},${y + h} ${x + w - r},${y + h}H${x}Z`;
+    }
+    function tooltip(container) {
+        let t = container.querySelector('.viz-tooltip');
+        if (!t) { t = document.createElement('div'); t.className = 'viz-tooltip'; container.appendChild(t); }
+        return {
+            show(title, rows, px, py) {
+                t.replaceChildren();
+                const head = document.createElement('div'); head.textContent = title; head.style.marginBottom = '2px';
+                t.appendChild(head);
+                for (const r of rows) {
+                    const row = document.createElement('div'); row.className = 'row';
+                    if (r.color) { const k = document.createElement('span'); k.className = 'line-key'; k.style.background = r.color; row.appendChild(k); }
+                    const v = document.createElement('strong'); v.textContent = r.value; row.appendChild(v);
+                    if (r.label) { const l = document.createElement('span'); l.textContent = r.label; row.appendChild(l); }
+                    t.appendChild(row);
+                }
+                t.style.display = 'block';
+                const cw = container.clientWidth, tw = t.offsetWidth;
+                t.style.left = Math.max(0, Math.min(cw - tw, px + 12)) + 'px';
+                t.style.top = Math.max(0, py - t.offsetHeight - 8) + 'px';
+            },
+            hide() { t.style.display = 'none'; },
+        };
+    }
+    function empty(container, text) {
+        container.replaceChildren();
+        const d = document.createElement('div'); d.className = 'viz-empty'; d.textContent = text; container.appendChild(d);
+    }
+    function yAxis(svg, m, w, h, max) {
+        for (let i = 0; i <= 4; i++) {
+            const v = max * i / 4, y = m.t + h - h * i / 4;
+            el('line', {x1: m.l, x2: m.l + w, y1: y, y2: y, stroke: i === 0 ? C('--axis') : C('--grid'), 'stroke-width': 1}, svg);
+            const t = el('text', {x: m.l - 6, y: y + 4, 'text-anchor': 'end'}, svg); t.textContent = fmt(Math.round(v));
+        }
+    }
+    function xLabels(svg, labels, xOf, y, width) {
+        const every = Math.max(1, Math.ceil(labels.length / Math.max(2, Math.floor(width / 56))));
+        labels.forEach((lab, i) => {
+            if (i % every !== 0 && i !== labels.length - 1) return;
+            if (i !== labels.length - 1 && labels.length - 1 - i < every) return;
+            const t = el('text', {x: xOf(i), y, 'text-anchor': 'middle'}, svg); t.textContent = lab;
+        });
+    }
+
+    function columnChart(container, labels, series, titles) {
+        container.replaceChildren();
+        const total = series.reduce((s, se) => s + se.values.reduce((a, b) => a + b, 0), 0);
+        if (!labels.length || total === 0) return empty(container, 'No data in this time range yet.');
+        const W = container.clientWidth, H = 220, m = {l: 44, r: 8, t: 12, b: 26};
+        const w = W - m.l - m.r, h = H - m.t - m.b;
+        const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, height: H, role: 'img'}, container);
+        const max = 4 * niceStep(Math.max(...series.flatMap(s => s.values)) / 4);
+        yAxis(svg, m, w, h, max);
+        const band = w / labels.length, gap = 2, groupW = Math.min(band * 0.7, 24 * series.length + gap * (series.length - 1));
+        const barW = Math.max(1, (groupW - gap * (series.length - 1)) / series.length);
+        const tip = tooltip(container);
+        labels.forEach((lab, i) => {
+            const x0 = m.l + band * i + (band - groupW) / 2;
+            const bars = series.map((s, si) => {
+                const v = s.values[i], bh = h * v / max;
+                if (v <= 0) return null;
+                return el('path', {d: columnPath(x0 + si * (barW + gap), m.t + h - bh, barW, bh), fill: s.color, class: 'bar'}, svg);
+            });
+            const hit = el('rect', {x: m.l + band * i, y: m.t, width: band, height: h, fill: 'transparent', tabindex: 0}, svg);
+            const show = (ev) => {
+                bars.forEach(b => b && b.classList.add('hover'));
+                const rect = container.getBoundingClientRect();
+                const px = ev.clientX ? ev.clientX - rect.left : m.l + band * i, py = ev.clientY ? ev.clientY - rect.top : m.t;
+                tip.show(titles[i], series.map(s => ({value: fmt(s.values[i]), label: series.length > 1 ? s.name : '', color: series.length > 1 ? s.color : null})), px, py);
+            };
+            const hide = () => { bars.forEach(b => b && b.classList.remove('hover')); tip.hide(); };
+            hit.addEventListener('pointermove', show); hit.addEventListener('focus', show);
+            hit.addEventListener('pointerleave', hide); hit.addEventListener('blur', hide);
+        });
+        xLabels(svg, labels, i => m.l + band * i + band / 2, H - 6, w);
+    }
+
+    function lineChart(container, labels, titles, values, color) {
+        container.replaceChildren();
+        const pts = values.map((v, i) => ({i, v})).filter(p => p.v !== null && p.v !== undefined);
+        if (!pts.length) return empty(container, 'No data in this time range yet.');
+        const W = container.clientWidth, H = 220, m = {l: 44, r: 40, t: 12, b: 26};
+        const w = W - m.l - m.r, h = H - m.t - m.b;
+        const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, height: H, role: 'img'}, container);
+        const vals = pts.map(p => p.v);
+        let lo = Math.min(...vals), hi = Math.max(...vals);
+        const pad = Math.max(1, Math.ceil((hi - lo) * 0.15));
+        lo = Math.max(0, lo - pad); hi = hi + pad;
+        const step = niceStep((hi - lo) / 4);
+        lo = Math.floor(lo / step) * step; hi = lo + step * 4;
+        const xOf = i => m.l + (labels.length === 1 ? w / 2 : w * i / (labels.length - 1));
+        const yOf = v => m.t + h - h * (v - lo) / (hi - lo);
+        for (let k = 0; k <= 4; k++) {
+            const v = lo + step * k, y = yOf(v);
+            el('line', {x1: m.l, x2: m.l + w, y1: y, y2: y, stroke: k === 0 ? C('--axis') : C('--grid'), 'stroke-width': 1}, svg);
+            const t = el('text', {x: m.l - 6, y: y + 4, 'text-anchor': 'end'}, svg); t.textContent = fmt(v);
+        }
+        const d = pts.map((p, k) => `${k ? 'L' : 'M'}${xOf(p.i)},${yOf(p.v)}`).join('');
+        const first = pts[0], last = pts[pts.length - 1];
+        el('path', {d: `${d}L${xOf(last.i)},${m.t + h}L${xOf(first.i)},${m.t + h}Z`, fill: color, 'fill-opacity': 0.1}, svg);
+        el('path', {d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
+        el('circle', {cx: xOf(last.i), cy: yOf(last.v), r: 4, fill: color, stroke: C('--surface-1'), 'stroke-width': 2}, svg);
+        const endLabel = el('text', {x: xOf(last.i) + 8, y: yOf(last.v) + 4, class: 'value-label'}, svg); endLabel.textContent = fmt(last.v);
+        xLabels(svg, labels, xOf, H - 6, w);
+        const cross = el('line', {y1: m.t, y2: m.t + h, stroke: C('--axis'), 'stroke-width': 1, visibility: 'hidden'}, svg);
+        const dot = el('circle', {r: 4, fill: color, stroke: C('--surface-1'), 'stroke-width': 2, visibility: 'hidden'}, svg);
+        const tip = tooltip(container);
+        const hit = el('rect', {x: m.l, y: m.t, width: w, height: h, fill: 'transparent'}, svg);
+        hit.addEventListener('pointermove', (ev) => {
+            const rect = svg.getBoundingClientRect();
+            const sx = (ev.clientX - rect.left) * (W / rect.width);
+            let best = pts[0];
+            for (const p of pts) if (Math.abs(xOf(p.i) - sx) < Math.abs(xOf(best.i) - sx)) best = p;
+            cross.setAttribute('x1', xOf(best.i)); cross.setAttribute('x2', xOf(best.i)); cross.setAttribute('visibility', 'visible');
+            dot.setAttribute('cx', xOf(best.i)); dot.setAttribute('cy', yOf(best.v)); dot.setAttribute('visibility', 'visible');
+            tip.show(titles[best.i], [{value: fmt(best.v), label: 'members'}], xOf(best.i) * rect.width / W, yOf(best.v) * rect.height / H);
+        });
+        hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.hide(); });
+    }
+
+    function hbarChart(container, labels, values, color, emptyText) {
+        container.replaceChildren();
+        if (!labels.length || values.every(v => !v)) return empty(container, emptyText);
+        const rowH = 26, barH = 16, labelW = Math.min(170, container.clientWidth * 0.4);
+        const W = container.clientWidth, H = labels.length * rowH + 4, m = {l: labelW, r: 56};
+        const w = W - m.l - m.r;
+        const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, height: H, role: 'img'}, container);
+        const max = Math.max(...values);
+        const tip = tooltip(container);
+        labels.forEach((lab, i) => {
+            const y = i * rowH + (rowH - barH) / 2;
+            const t = el('text', {x: m.l - 8, y: y + barH / 2 + 4, 'text-anchor': 'end'}, svg);
+            t.textContent = lab.length > 24 ? lab.slice(0, 23) + '…' : lab;
+            const bw = Math.max(values[i] > 0 ? 2 : 0, w * values[i] / max);
+            const bar = el('path', {d: barPath(m.l, y, bw, barH), fill: color, class: 'bar'}, svg);
+            const v = el('text', {x: m.l + bw + 6, y: y + barH / 2 + 4, class: 'value-label'}, svg); v.textContent = fmt(values[i]);
+            const hit = el('rect', {x: 0, y: i * rowH, width: W, height: rowH, fill: 'transparent', tabindex: 0}, svg);
+            const show = (ev) => {
+                bar.classList.add('hover');
+                const rect = container.getBoundingClientRect();
+                tip.show(lab, [{value: fmt(values[i])}], ev.clientX ? ev.clientX - rect.left : m.l + bw, y);
+            };
+            const hide = () => { bar.classList.remove('hover'); tip.hide(); };
+            hit.addEventListener('pointermove', show); hit.addEventListener('focus', show);
+            hit.addEventListener('pointerleave', hide); hit.addEventListener('blur', hide);
+        });
+    }
+
+    function table(containerId, headers, rows) {
+        const box = document.getElementById(containerId);
+        box.replaceChildren();
+        const t = document.createElement('table');
+        const thead = t.createTHead().insertRow();
+        headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; thead.appendChild(th); });
+        const tb = t.createTBody();
+        rows.forEach(r => { const tr = tb.insertRow(); r.forEach(c => { tr.insertCell().textContent = c; }); });
+        box.appendChild(t);
+    }
+
+    function weekKey(iso) {  // Monday of that week
+        const d = new Date(iso + 'T12:00:00');
+        const day = (d.getDay() + 6) % 7;
+        d.setDate(d.getDate() - day);
+        return d.toISOString().slice(0, 10);
+    }
+
+    // Long ranges are summed per week so the columns stay readable.
+    function buckets(days, weekly) {
+        if (!weekly) return {labels: days.map(d => shortDate(d.date)), titles: days.map(d => d.date), rows: days};
+        const map = new Map();
+        days.forEach(d => {
+            const k = weekKey(d.date);
+            const b = map.get(k) || {date: k, joins: 0, leaves: 0, messages: 0};
+            b.joins += d.joins; b.leaves += d.leaves; b.messages += d.messages;
+            map.set(k, b);
+        });
+        const rows = [...map.values()];
+        return {labels: rows.map(r => shortDate(r.date)), titles: rows.map(r => 'Week of ' + r.date), rows};
+    }
+
+    function render() {
+        const range = parseInt(document.getElementById('range').value, 10);
+        const days = DATA.days.slice(-range);
+        const labels = days.map(d => shortDate(d.date));
+        const titles = days.map(d => d.date);
+        const weekly = range > 45;
+        const per = buckets(days, weekly);
+        document.querySelectorAll('.per-unit').forEach(e => { e.textContent = weekly ? 'Per week' : 'Per day'; });
+        const since = Date.now() / 1000 - range * 86400;
+
+        // Tiles
+        const withMembers = days.filter(d => d.members !== null);
+        const now = DATA.members_now ?? (withMembers.length ? withMembers[withMembers.length - 1].members : null);
+        document.getElementById('tile-members').textContent = fmt(now);
+        const joins = days.reduce((a, d) => a + d.joins, 0), leaves = days.reduce((a, d) => a + d.leaves, 0);
+        document.getElementById('tile-members-sub').textContent = `+${fmt(joins)} joined · −${fmt(leaves)} left`;
+        const msgs = days.reduce((a, d) => a + d.messages, 0);
+        document.getElementById('tile-messages').textContent = fmt(msgs);
+        document.getElementById('tile-messages-sub').textContent = `≈ ${fmt(Math.round(msgs / range))} per day`;
+        const opened = days.reduce((a, d) => a + d.tickets_opened, 0), closed = days.reduce((a, d) => a + d.tickets_closed, 0);
+        document.getElementById('tile-tickets').textContent = fmt(opened);
+        document.getElementById('tile-tickets-sub').textContent = `${fmt(closed)} closed`;
+        const ratings = DATA.ratings.filter(r => r.ts >= since);
+        const avg = ratings.length ? ratings.reduce((a, r) => a + r.stars, 0) / ratings.length : null;
+        document.getElementById('tile-rating').textContent = avg === null ? '–' : `★ ${avg.toFixed(1)}`;
+        document.getElementById('tile-rating-sub').textContent = `${fmt(ratings.length)} rating(s)`;
+
+        // Members
+        lineChart(document.getElementById('chart-members'), labels, titles, days.map(d => d.members), C('--series-1'));
+        table('table-members', ['Date', 'Members'], days.slice().reverse().map(d => [d.date, fmt(d.members)]));
+
+        // Joins / leaves
+        columnChart(document.getElementById('chart-joins'), per.labels,
+            [{name: 'Joins', color: C('--series-1'), values: per.rows.map(d => d.joins)},
+             {name: 'Leaves', color: C('--series-2'), values: per.rows.map(d => d.leaves)}], per.titles);
+        table('table-joins', [weekly ? 'Week of' : 'Date', 'Joins', 'Leaves'],
+            per.rows.slice().reverse().map(d => [d.date, fmt(d.joins), fmt(d.leaves)]));
+
+        // Messages
+        columnChart(document.getElementById('chart-messages'), per.labels,
+            [{name: 'Messages', color: C('--series-1'), values: per.rows.map(d => d.messages)}], per.titles);
+        table('table-messages', [weekly ? 'Week of' : 'Date', 'Messages'],
+            per.rows.slice().reverse().map(d => [d.date, fmt(d.messages)]));
+
+        // Tickets per week
+        const weeks = {};
+        days.forEach(d => { const k = weekKey(d.date); weeks[k] = (weeks[k] || 0) + d.tickets_opened; });
+        const wk = Object.keys(weeks).sort();
+        columnChart(document.getElementById('chart-tickets'), wk.map(shortDate),
+            [{name: 'Tickets', color: C('--series-1'), values: wk.map(k => weeks[k])}], wk.map(k => 'Week of ' + k));
+        table('table-tickets', ['Week of', 'Tickets opened'], wk.slice().reverse().map(k => [k, fmt(weeks[k])]));
+
+        // Channels
+        const perChannel = {};
+        days.forEach(d => { for (const id in d.channels) perChannel[id] = (perChannel[id] || 0) + d.channels[id]; });
+        const top = Object.entries(perChannel).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        const chName = id => '#' + (DATA.channel_names[id] || id);
+        hbarChart(document.getElementById('chart-channels'), top.map(([id]) => chName(id)), top.map(([, n]) => n), C('--series-1'),
+            'No messages in this time range yet.');
+        table('table-channels', ['Channel', 'Messages'], Object.entries(perChannel).sort((a, b) => b[1] - a[1]).map(([id, n]) => [chName(id), fmt(n)]));
+
+        // Ratings
+        const dist = [5, 4, 3, 2, 1].map(s => ratings.filter(r => r.stars === s).length);
+        hbarChart(document.getElementById('chart-ratings'), ['5 ★', '4 ★', '3 ★', '2 ★', '1 ★'], dist, C('--series-1'),
+            'No ratings in this time range yet.');
+        table('table-ratings', ['Stars', 'Ratings'], [5, 4, 3, 2, 1].map((s, i) => [s + ' ★', fmt(dist[i])]));
+    }
+
+    document.getElementById('range').addEventListener('change', render);
+    let resizeTimer;
+    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
+    render();
+})();
+</script>
+{% endblock %}

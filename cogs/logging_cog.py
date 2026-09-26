@@ -56,6 +56,15 @@ async def _safe_send(channel: discord.TextChannel | None, *, embed: discord.Embe
         log.exception("Failed to send log embed")
 
 
+def _is_temp_voice(channel) -> bool:
+    """Join-to-create channels come and go all the time - don't flood #server-logs with them."""
+    try:
+        from cogs.temp_voice import is_temp_channel
+        return is_temp_channel(channel)
+    except Exception:
+        return False
+
+
 def _truncate(text: str, limit: int = 1024) -> str:
     if not text:
         return "*(empty)*"
@@ -186,7 +195,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None or ch.id == getattr(channel, "id", None):
+        if ch is None or ch.id == getattr(channel, "id", None) or _is_temp_voice(channel):
             return
         embed = discord.Embed(title="Channel Created", color=0x2ECC71, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)
@@ -196,7 +205,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None:
+        if ch is None or _is_temp_voice(channel):
             return
         embed = discord.Embed(title="Channel Deleted", color=0xE74C3C, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)

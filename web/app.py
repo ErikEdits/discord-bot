@@ -557,13 +557,7 @@ async def maintenance_set(request: Request, feature: str = Form(...), state: str
 async def announce_page(request: Request):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=303)
-    channels = []
-    for g in _guilds():
-        for ch in sorted(g.text_channels, key=lambda c: (c.category.position if c.category else -1, c.position)):
-            if ch.permissions_for(g.me).send_messages:
-                channels.append({"id": ch.id, "label": f"{g.name} / #{ch.name}",
-                                 "category": ch.category.name if ch.category else ""})
-    return _page(request, "announce.html", channels=channels)
+    return _page(request, "announce.html", channels=_writable_channels())
 
 
 @app.post("/announce")
@@ -597,3 +591,144 @@ async def announce_send(request: Request, channel_id: str = Form(...), title: st
         return _redirect("/announce", err=f"Sending failed: {e}")
     log.info("Announcement posted via panel in #%s", channel.name)
     return _redirect("/announce", msg=f"Announcement posted in #{channel.name}.")
+
+
+# -------- Routes: scheduled announcements ----------------------------------
+
+def _writable_channels() -> list[dict]:
+    channels = []
+    for g in _guilds():
+        for ch in sorted(g.text_channels, key=lambda c: (c.category.position if c.category else -1, c.position)):
+            if ch.permissions_for(g.me).send_messages:
+                channels.append({"id": ch.id, "label": f"{g.name} / #{ch.name}"})
+    return channels
+
+
+@app.get("/scheduled", response_class=HTMLResponse)
+async def scheduled_page(request: Request, edit: Optional[str] = None):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.scheduler import load_items, local_str, tz
+    bot = current_bot()
+    items = sorted(load_items(), key=lambda i: i["send_at"])
+    for i in items:
+        ch = bot.get_channel(i["channel_id"]) if bot else None
+        i["channel_label"] = f"#{ch.name}" if ch else str(i["channel_id"])
+        i["local"] = local_str(i["send_at"])
+        i["input_value"] = i["local"].replace(" ", "T")
+    editing = next((i for i in items if i["id"] == edit), None) if edit else None
+    return _page(request, "scheduled.html", items=items, editing=editing, channels=_writable_channels(),
+                 timezone=str(tz()))
+
+
+@app.post("/scheduled/save")
+async def scheduled_save(request: Request, channel_id: str = Form(""), when: str = Form(...), title: str = Form(...),
+                         message: str = Form(...), ping: str = Form("none"), item_id: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.scheduler import add_item, parse_when, update_item, validate_time
+    ts = parse_when(when)
+    error = validate_time(ts)
+    if error:
+        return _redirect("/scheduled" + (f"?edit={item_id}" if item_id else ""), err=error.replace("`", ""))
+    if not title.strip() or not message.strip():
+        return _redirect("/scheduled", err="Title and text are required.")
+    if ping not in ("none", "everyone") and not ping.startswith("role:"):
+        ping = "none"
+    if item_id:
+        item = update_item(item_id, title=title.strip()[:256], message=message.replace("\r", "").strip()[:4000],
+                           send_at=ts, ping=ping)
+        if item is None:
+            return _redirect("/scheduled", err="That announcement was already sent or deleted.")
+        return _redirect("/scheduled", msg=f"Announcement {item_id} updated.")
+    bot = current_bot()
+    try:
+        channel = bot.get_channel(int(channel_id)) if bot else None
+    except ValueError:
+        channel = None
+    if not isinstance(channel, discord.TextChannel):
+        return _redirect("/scheduled", err="Channel not found.")
+    item = add_item(channel.guild.id, channel.id, title, message, ts, ping, "web panel")
+    log.info("Announcement %s scheduled via panel", item["id"])
+    return _redirect("/scheduled", msg=f"Scheduled for {when.replace('T', ' ')}.")
+
+
+@app.post("/scheduled/delete")
+async def scheduled_delete(request: Request, item_id: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.scheduler import delete_item
+    if not delete_item(item_id):
+        return _redirect("/scheduled", err="Not found (maybe already sent).")
+    return _redirect("/scheduled", msg="Deleted.")
+
+
+# -------- Routes: statistics -----------------------------------------------
+
+def _stats_payload(guild_id: str | None) -> dict:
+    from datetime import date as _date, timedelta as _td
+    from cogs.stats import load_stats, today_key
+    bot = current_bot()
+    cog = bot.get_cog("Stats") if bot else None
+    data = cog.data if cog is not None else load_stats()
+    guilds = _guilds()
+    guild = _guild(guild_id) if guild_id else (guilds[0] if guilds else None)
+    gid = str(guild.id) if guild else next(iter(data["guilds"]), None)
+    g = data["guilds"].get(gid or "", {"days": {}, "ratings": [], "claims": {}, "channel_names": {}})
+
+    end = _date.fromisoformat(today_key())
+    days = []
+    for offset in range(179, -1, -1):
+        key = (end - _td(days=offset)).isoformat()
+        d = g["days"].get(key, {})
+        days.append({
+            "date": key,
+            "members": d.get("members"),
+            "joins": d.get("joins", 0),
+            "leaves": d.get("leaves", 0),
+            "messages": d.get("messages", 0),
+            "tickets_opened": d.get("tickets_opened", 0),
+            "tickets_closed": d.get("tickets_closed", 0),
+            "channels": d.get("channels", {}),
+        })
+    names = dict(g.get("channel_names", {}))
+    if guild:
+        for ch in guild.channels:
+            names[str(ch.id)] = ch.name  # current names win over the recorded ones
+
+    levels = []
+    levels_cog = bot.get_cog("Levels") if bot else None
+    level_data = levels_cog.data if levels_cog else _load_json(DATA_DIR / "levels.json")
+    if gid:
+        from cogs.levels import level_from_xp
+        ranked = sorted(level_data.get(gid, {}).items(), key=lambda kv: kv[1].get("xp", 0), reverse=True)[:10]
+        for uid, entry in ranked:
+            member = guild.get_member(int(uid)) if guild else None
+            levels.append({"name": member.display_name if member else entry.get("name", uid),
+                           "level": level_from_xp(entry.get("xp", 0)), "xp": entry.get("xp", 0),
+                           "messages": entry.get("messages", 0)})
+    claims = sorted(g.get("claims", {}).values(), key=lambda c: c.get("count", 0), reverse=True)[:10]
+    return {
+        "guild_name": guild.name if guild else None,
+        "members_now": guild.member_count if guild else None,
+        "days": days,
+        "channel_names": names,
+        "ratings": g.get("ratings", []),
+        "claims": claims,
+        "levels": levels,
+    }
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_page(request: Request, guild: Optional[str] = None):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    payload = _stats_payload(guild)
+    return _page(request, "stats.html", payload=payload, selected_guild=guild)
+
+
+@app.get("/api/stats")
+async def api_stats(request: Request, guild: Optional[str] = None):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    return _stats_payload(guild)
