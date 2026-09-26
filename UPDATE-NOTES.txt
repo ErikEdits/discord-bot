@@ -1,4 +1,54 @@
 ============================================================
+ BOT UPDATE 6 - Panel-Starter (Web-Panel auf deinem PC)
+============================================================
+
+/panel-launcher get  (nur Admin)
+  Der Bot schickt dir per DM eine Datei. Doppelklick drauf -> dein
+  Browser oeffnet das Web-Panel. Es laeuft auf DEINEM PC, solange das
+  schwarze Fenster offen ist. Fenster zu = Panel aus.
+  Nichts einstellen, kein Port, keine IP - klappt ueberall, wo du
+  Internet hast.
+
+  Windows:  "Open-Bot-Panel.cmd" (nichts installieren noetig)
+            Beim ersten Mal kann Windows warnen ("Der Computer wurde
+            durch Windows geschuetzt") -> "Weitere Informationen" ->
+            "Trotzdem ausfuehren". Discord warnt evtl. auch beim
+            Download von .cmd-Dateien - das ist normal.
+  Mac/Linux: /panel-launcher get system:Python -> "open_bot_panel.py"
+            (braucht Python 3)
+
+Wie es funktioniert:
+  Der Bot-Hoster laesst von aussen keine Verbindung zum Panel zu.
+  Dein PC und der Bot koennen aber beide Discord erreichen - also
+  laeuft die Verbindung ueber Discord: Die Datei schreibt jede
+  Anfrage in den versteckten Channel #panel-relay (unter LOGS), der
+  Bot beantwortet sie mit dem Web-Panel und die Datei zeigt die
+  Antwort im Browser an. Die Nachrichten dort loescht der Bot sofort
+  wieder. Jeder Seitenaufruf dauert deshalb ca. 1 Sekunde, und die
+  Live-Anzeigen (Dashboard, Logs) aktualisieren sich alle 15 statt
+  alle 3 Sekunden (Discord-Limits).
+
+Sicherheit:
+  - Die Datei ist DEIN persoenlicher Schluessel - nicht weitergeben.
+  - Jede Anfrage ist damit signiert, und der Bot prueft bei JEDER
+    Anfrage, ob du noch Administrator bist.
+  - Nur dein eigener Browser auf deinem PC kommt an das Panel ran
+    (andere Webseiten und andere Geraete nicht).
+  - Neue Datei holen = alte Datei funktioniert nicht mehr.
+
+/panel-launcher status          wer hat eine Datei, wann zuletzt benutzt
+/panel-launcher revoke [@user]  eine Datei sofort ungueltig machen
+/panel-launcher reset           ALLE Dateien ungueltig + neuer Webhook
+
+Die Schluessel liegen in data/panel_launcher.json und kommen NICHT
+ins Backup. /selftest prueft den Panel-Starter mit.
+
+Braucht: MESSAGE_CONTENT_INTENT=true (ist Standard).
+panel.bat und bot-panel.ps1 (SSH-Tunnel zum alten Server) brauchst
+du dafuer nicht.
+
+
+============================================================
  BOT UPDATE 5 - /selftest
 ============================================================
 

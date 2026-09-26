@@ -121,7 +121,7 @@ async function tickSystem() {
     const el = document.getElementById(id);
     if (el) setBarColor(el, parseFloat(el.style.width));
 });
-setInterval(tickSystem, 3000);
+setInterval(tickSystem, {{ poll_ms(request) }});
 </script>
 
 <div class="section">

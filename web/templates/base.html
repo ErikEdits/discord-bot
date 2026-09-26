@@ -23,7 +23,8 @@
     <a href="/maintenance" {% if request.url.path == "/maintenance" %}class="active"{% endif %}>Maintenance</a>
     <a href="/logs" {% if request.url.path == "/logs" %}class="active"{% endif %}>Logs</a>
     {% set who = panel_user(request) %}{% if who %}<span class="muted" style="font-size: 12px">{{ who }}</span>{% endif %}
-    <form action="/logout" method="post"><button class="small">Logout</button></form>
+    {% if relay_mode(request) %}<span class="muted" style="font-size: 12px" title="Connected through the panel launcher">via launcher</span>
+    {% else %}<form action="/logout" method="post"><button class="small">Logout</button></form>{% endif %}
 </nav>
 {% endif %}
 <main>

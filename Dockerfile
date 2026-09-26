@@ -14,6 +14,7 @@ RUN pip install -r requirements.txt
 COPY bot.py server_template.py crashlog_analyzer.py updater.py ./
 COPY cogs/ ./cogs/
 COPY web/ ./web/
+COPY launcher/ ./launcher/
 
 # Persistent volume target. Mounted by fly.toml.
 RUN mkdir -p /app/data
