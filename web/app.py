@@ -45,6 +45,10 @@ _jinja_env = Environment(
 )
 templates = Jinja2Templates(env=_jinja_env)
 _jinja_env.globals["panel_user"] = lambda request: _panel_user(request)
+_jinja_env.globals["relay_mode"] = lambda request: _relay(request) is not None
+# Live-refresh interval of the dashboard/logs pages. Over the Discord relay (panel launcher)
+# every refresh is a Discord message, so refresh less often there.
+_jinja_env.globals["poll_ms"] = lambda request: 15000 if _relay(request) else 3000
 app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "admin")
@@ -91,7 +95,17 @@ def _discord_admin_guilds(user_id: int) -> list[discord.Guild]:
     return out
 
 
+def _relay(request: Request) -> Optional[dict]:
+    """Requests from the panel launcher (cogs/panel_launcher.py) are handed to the app
+    in-process with the verified Discord user in the ASGI scope. That key can't be set
+    by an HTTP client, so it only exists on requests the relay already authenticated."""
+    return request.scope.get("panel_relay")
+
+
 def _is_authed(request: Request) -> bool:
+    relay = _relay(request)
+    if relay is not None:
+        return bool(_discord_admin_guilds(relay["user_id"]))
     token = request.cookies.get(SESSION_COOKIE)
     session = SESSIONS.get(token) if token else None
     if session is None:
@@ -106,6 +120,9 @@ def _is_authed(request: Request) -> bool:
 
 
 def _panel_user(request: Request) -> Optional[str]:
+    relay = _relay(request)
+    if relay is not None:
+        return relay.get("name")
     token = request.cookies.get(SESSION_COOKIE)
     session = SESSIONS.get(token) if token else None
     return session.get("name") if session else None
@@ -314,6 +331,8 @@ def _all_warnings() -> list[dict]:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: Optional[str] = None):
+    if _relay(request) is not None and _is_authed(request):
+        return RedirectResponse("/", status_code=303)  # the launcher is already logged in
     return templates.TemplateResponse(request, "login.html", {
         "error": error,
         "authenticated": False,

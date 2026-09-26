@@ -11,7 +11,8 @@ Nothing is kept on the bot host - the webhook's channel is the archive.
 /backup-now      send a backup right now (administrator)
 /backup-restore  restore the bot data from a backup zip (administrator)
 
-data/settings.json (webhook URLs) is never included in or overwritten by a backup.
+data/settings.json (webhook URLs) and data/panel_launcher.json (launcher keys) are never
+included in or overwritten by a backup.
 """
 
 import io
@@ -32,7 +33,7 @@ from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.backup")
 
-BACKUP_EXCLUDE = {"settings.json"}
+BACKUP_EXCLUDE = {"settings.json", "panel_launcher.json"}  # webhook URLs, launcher keys
 MAX_WEBHOOK_BYTES = 9 * 1024 * 1024       # Discord's upload limit for webhooks is ~10 MB
 MAX_RESTORE_FILE_BYTES = 20 * 1024 * 1024
 DATA_NAME_RE = re.compile(r"^[\w\-]+\.json$")

@@ -160,6 +160,7 @@ if LOW_POWER:
         "cogs.error_alerts",
         "cogs.bot_updates",
         "cogs.selftest",
+        "cogs.panel_launcher",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -188,6 +189,7 @@ else:
         "cogs.error_alerts",  # first, so it also reports errors while the others load
         "cogs.bot_updates",
         "cogs.selftest",
+        "cogs.panel_launcher",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",

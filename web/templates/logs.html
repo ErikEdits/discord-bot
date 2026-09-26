@@ -50,6 +50,6 @@ async function tick() {
         }
     } catch (e) {}
 }
-setInterval(tick, 3000);
+setInterval(tick, {{ poll_ms(request) }});
 </script>
 {% endblock %}

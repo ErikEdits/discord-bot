@@ -14,7 +14,8 @@ What it checks:
                  link filter, time parsing, levels, roadmap, FAQ matching,
                  auto slowmode, counting, backups, images, embed builder, ...)
   5. Storage     data folder writable, every data file readable, free disk space
-  6. Services    Modrinth, GitHub (auto-update), configured webhooks, web panel
+  6. Services    Modrinth, GitHub (auto-update), configured webhooks, web panel,
+                 panel launcher (relay channel, webhook, a relayed panel request)
 
 Everything the test creates is prefixed "bot-selftest" and deleted at the end
 (also leftovers from an interrupted earlier run). Nothing is posted in real
@@ -681,8 +682,36 @@ async def service_checks(run: SelfTestRun):
             raise Warning_(f"last backup {hours:.0f} hours ago")
         return f"last backup {hours:.1f} hours ago"
 
+    async def panel_launcher():
+        import cogs.panel_launcher as pl
+        for system in pl.SYSTEMS:  # both launcher files can be built
+            name, data = pl.build_launcher(system, "https://discord.com/api/v10/webhooks/1/x", "k", "c2VjcmV0", "test")
+            if b"__WEBHOOK_URL__" in data or len(data) < 2000:
+                raise RuntimeError(f"launcher template {name} is broken")
+        from web.app import current_bot, set_bot
+        if current_bot() is None:
+            set_bot(run.bot)  # panel HTTP server switched off
+        status, headers, _ = await pl.call_panel("GET", "/login", "", b"",
+                                                 {"user_id": run.user.id, "name": str(run.user)})
+        if status != 303 or headers.get("location") != "/":
+            raise RuntimeError(f"relayed panel request answered HTTP {status} (expected a logged-in redirect)")
+        relay = pl.load_state()["relay"]
+        if not relay:
+            raise Skip("not set up yet (/panel-launcher get)")
+        channel = run.bot.get_channel(relay["channel_id"])
+        if channel is None:
+            raise Warning_("the #panel-relay channel is gone - /panel-launcher get creates a new one "
+                           "(existing launcher files stop working)")
+        hooks = await channel.webhooks()
+        if not any(h.id == relay["webhook_id"] for h in hooks):
+            raise Warning_("the relay webhook is gone - /panel-launcher get creates a new one "
+                           "(existing launcher files stop working)")
+        if not run.bot.intents.message_content:
+            raise RuntimeError("MESSAGE_CONTENT_INTENT is off - the relay can't read launcher requests")
+        return f"relay ok, {len(pl.load_state()['keys'])} launcher file(s) active"
+
     for name, func in (("Modrinth", modrinth), ("GitHub (auto-update)", github), ("Webhooks", webhooks),
-                       ("Web panel", web_panel), ("Backups", backups_recent)):
+                       ("Web panel", web_panel), ("Panel launcher", panel_launcher), ("Backups", backups_recent)):
         await run.check(g, name, func)
 
 
