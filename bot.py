@@ -718,6 +718,9 @@ ONBOARDING_PROMPT_TYPES = {
     "dropdown": discord.OnboardingPromptType.dropdown,
 }
 
+ONBOARDING_MIN_CHANNELS = 7
+ONBOARDING_MIN_WRITABLE = 5
+
 ONBOARDING_MODES = {
     "default": discord.OnboardingMode.default,
     "advanced": discord.OnboardingMode.advanced,
@@ -744,6 +747,19 @@ async def configure_onboarding(guild, template, role_lookup):
             log.info("Skipping onboarding default channel %s (@everyone can't view)", ch.name)
             continue
         default_channels.append(ch)
+
+    # Discord only enables onboarding with at least 7 default channels, 5 of which
+    # @everyone can write in. Our info channels are read-only and the chat channels
+    # are hidden until the rules are accepted, so check first instead of letting
+    # Discord reject it with error 350000.
+    writable = sum(1 for ch in default_channels if ch.permissions_for(guild.default_role).send_messages)
+    if len(default_channels) < ONBOARDING_MIN_CHANNELS or writable < ONBOARDING_MIN_WRITABLE:
+        log.info(
+            "Onboarding skipped: Discord needs %d default channels (%d where @everyone can write), "
+            "this server has %d (%d writable) visible to @everyone",
+            ONBOARDING_MIN_CHANNELS, ONBOARDING_MIN_WRITABLE, len(default_channels), writable,
+        )
+        return False
 
     prompts = []
     for prompt_def in config.get("prompts", []):
@@ -790,6 +806,12 @@ async def configure_onboarding(guild, template, role_lookup):
         return True
     except discord.Forbidden:
         log.warning("Missing permission to edit onboarding")
+        return False
+    except discord.HTTPException as e:
+        if e.code == 350000:
+            log.warning("Onboarding skipped: Discord says the requirements are not met (%s)", e.text)
+        else:
+            log.exception("Failed to configure onboarding")
         return False
     except Exception:
         log.exception("Failed to configure onboarding")
@@ -1190,7 +1212,7 @@ async def setup_cmd(interaction: discord.Interaction):
         f"- Crash-analyzer panel: **{'posted to #' + CHANNELS['crash_analyzer'] if crash_panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Member counter: **{counter_state}**",
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped (needs Community Server)'}**",
-        f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (needs Community Server)'}**",
+        f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (Discord requirements not met - see log)'}**",
         "- Rules and welcome embeds posted where missing.",
         "",
         "Tip: drag your bot's role above the new roles so it can manage them.",
@@ -1446,4 +1468,6 @@ async def setup_preview(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    # log_handler=None: logging is already set up above; discord.py's own handler
+    # would print every discord.* line twice.
+    bot.run(TOKEN, log_handler=None)
