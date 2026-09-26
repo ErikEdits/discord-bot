@@ -114,6 +114,16 @@ def is_staff(member, support_role_names) -> bool:
     return any(r.name in names for r in getattr(member, "roles", []))
 
 
+# -------- Self-test ------------------------------------------------------
+
+# Everything /selftest creates starts with this name; the logging cog ignores it.
+SELFTEST_PREFIX = "bot-selftest"
+
+
+def is_selftest_name(name: str | None) -> bool:
+    return bool(name) and name.startswith(SELFTEST_PREFIX)
+
+
 # -------- Messages the bot deletes itself ---------------------------------
 
 # IDs of messages the bot removes on purpose (reposted suggestions, filtered links).

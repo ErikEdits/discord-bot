@@ -1,4 +1,47 @@
 ============================================================
+ BOT UPDATE 5 - /selftest
+============================================================
+
+/selftest (nur Admin) testet den ganzen Bot von vorne bis hinten:
+
+ 1. Bot       eingeloggt, Ping, Intents, ALLE Erweiterungen geladen,
+              Slash-Befehle bei Discord registriert, Hintergrund-Jobs laufen
+ 2. Server    alle Rollen/Kategorien/Channels aus der Vorlage da, Bot hat
+              alle Rechte (serverweit + in jedem Channel), Bot-Rolle steht
+              ueber allen Rollen die er vergibt, Panels sind gepostet
+ 3. Discord   ECHTE Aktionen in einer versteckten Test-Kategorie:
+              Nachricht senden/bearbeiten/reagieren, Embed mit Bild,
+              Buttons, Thread, Anpinnen, Slowmode, Rechte, Test-Rolle,
+              Webhook, Voice-Channel, Loeschen, Audit-Log, Invites,
+              Ankuendigungs- und Roadmap-Ausgabe
+ 4. Features  Logik jedes Features mit Testdaten (Crash-Analyzer,
+              Link-Filter, Zeiten, Levels, Roadmap, FAQ, Auto-Slowmode,
+              Zaehlen, Backup+Wiederherstellen, Bilder, Embed-Baukasten,
+              Bug-Formular, Rollen-Panel, Kompatibilitaets-Tabelle)
+ 5. Speicher  data-Ordner beschreibbar, alle Daten-Dateien lesbar,
+              genug Speicherplatz
+ 6. Dienste   Modrinth, GitHub (Auto-Update), Bug-/Backup-Webhooks
+              (nur geprueft, nichts gepostet), Web-Panel, letztes Backup
+
+Alles was der Test anlegt heisst "bot-selftest..." und wird am Ende
+wieder geloescht (auch Reste von einem abgebrochenen Test). Niemand
+wird angepingt, in echten Channels wird nichts gepostet, und die
+Test-Sachen tauchen nicht in den Logs auf.
+
+- Alles ok     -> Zusammenfassung, Test-Sachen weggeraeumt
+- Fehler       -> du bekommst die komplette Log-Datei per DM (mit
+                  Fehlermeldungen, Tracebacks und den letzten 300
+                  Bot-Log-Zeilen). Sind deine DMs zu, haengt sie direkt
+                  an der Antwort.
+- Warnungen    (z.B. kein Backup-Webhook gesetzt) werden angezeigt,
+                  zaehlen aber nicht als Fehler.
+
+Hinweis: Buttons klicken und Slash-Befehle ausfuehren kann ein Bot
+technisch nicht selbst - dafuer prueft der Test, dass alles dafuer
+bereit ist (Befehle registriert, Buttons baubar, Rechte da).
+
+
+============================================================
  BOT UPDATE 4 - Automatische Updates von GitHub
 ============================================================
 

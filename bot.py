@@ -159,6 +159,7 @@ if LOW_POWER:
     EXTENSIONS = (
         "cogs.error_alerts",
         "cogs.bot_updates",
+        "cogs.selftest",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -186,6 +187,7 @@ else:
     EXTENSIONS = (
         "cogs.error_alerts",  # first, so it also reports errors while the others load
         "cogs.bot_updates",
+        "cogs.selftest",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
