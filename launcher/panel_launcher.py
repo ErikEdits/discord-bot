@@ -36,7 +36,7 @@ USER_AGENT = "DiscordBot (https://github.com/ErikEdits/discord-bot, 1) PanelLaun
 ANSWER_TIMEOUT = 45
 MAX_BODY = 8 * 1024 * 1024
 
-GATE = secrets.token_urlsafe(24)   # browser cookie, so other websites can't use this local server
+GATE = secrets.token_hex(24)   # browser cookie, so other websites can't use this local server
 state = {"offset": 0.0, "port": 0}
 static_cache: dict = {}
 relay_slots = threading.Semaphore(3)
