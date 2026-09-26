@@ -9,3 +9,4 @@ venv/
 .idea/
 .vscode/
 _deploy_one_off.py
+.update/

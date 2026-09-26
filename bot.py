@@ -6,6 +6,14 @@ server_template.py. Existing items with the same name are left alone,
 so /setup is safe to run more than once.
 """
 
+# The self-updater runs FIRST (standard library only): it may download, install
+# or roll back an update before any other module - including discord.py - is
+# loaded. See updater.py.
+import updater
+
+if __name__ == "__main__":
+    updater.startup()
+
 import asyncio
 import logging
 import os
@@ -150,6 +158,7 @@ class RulesAcceptButton(discord.ui.Button):
 if LOW_POWER:
     EXTENSIONS = (
         "cogs.error_alerts",
+        "cogs.bot_updates",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -176,6 +185,7 @@ if LOW_POWER:
 else:
     EXTENSIONS = (
         "cogs.error_alerts",  # first, so it also reports errors while the others load
+        "cogs.bot_updates",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -231,6 +241,37 @@ async def _start_web_panel():
     log.info("Web panel starting at http://%s:%d (login with PANEL_PASSWORD)", PANEL_HOST, PANEL_PORT)
 
 
+FAILED_EXTENSIONS: list[str] = []
+_update_health_checked = False
+
+
+async def restart_bot() -> None:
+    """Close the bot cleanly (cogs save their data); __main__ then starts a fresh process."""
+    updater.request_restart()
+    await bot.close()
+
+
+async def _update_health_check() -> None:
+    """A freshly installed update counts as healthy once the bot is connected with all
+    extensions loaded and keeps running for a minute. Otherwise it's rolled back."""
+    global _update_health_checked
+    if _update_health_checked or not updater.pending_health():
+        return
+    _update_health_checked = True
+    if FAILED_EXTENSIONS:
+        if updater.report_failure("extensions failed to load: " + ", ".join(FAILED_EXTENSIONS)):
+            await restart_bot()
+        return
+
+    async def _confirm():
+        await asyncio.sleep(updater.HEALTHY_AFTER_SECONDS)
+        if not bot.is_closed():
+            updater.mark_healthy()
+            log.info("Update confirmed healthy")
+
+    asyncio.create_task(_confirm(), name="update-health")
+
+
 async def _setup_hook():
     panel = get_panel_config()  # web-panel edits (data/role_panel.json) win over the template
     if panel and panel.get("buttons"):
@@ -260,6 +301,7 @@ async def _setup_hook():
             log.info("Loaded extension: %s", ext)
         except Exception:
             log.exception("Failed to load extension: %s", ext)
+            FAILED_EXTENSIONS.append(ext)
     await _start_web_panel()
 
 bot.setup_hook = _setup_hook
@@ -277,6 +319,7 @@ async def on_ready():
             log.info("Synced %d command(s) to guild '%s'", len(synced), guild.name)
     except Exception:
         log.exception("Failed to sync slash commands")
+    await _update_health_check()
 
 
 @bot.event
@@ -1462,3 +1505,5 @@ if __name__ == "__main__":
     # log_handler=None: logging is already set up above; discord.py's own handler
     # would print every discord.* line twice.
     bot.run(TOKEN, log_handler=None)
+    if updater.restart_requested():
+        updater.restart_process()

@@ -1,4 +1,75 @@
 ============================================================
+ BOT UPDATE 4 - Automatische Updates von GitHub
+============================================================
+
+EINMALIG: Diese Version noch EINMAL von Hand hochladen (wie bisher).
+Ab dann holt sich der Bot alle weiteren Updates selbst.
+.env und data-Ordner wie immer behalten.
+
+
+WIE ES FUNKTIONIERT
+-------------------
+Der Bot vergleicht seine Dateien mit dem GitHub-Repo
+(ErikEdits/discord-bot, Branch claude/sweet-davinci-8vo688).
+Pro Start des Bots passiert EIN Schritt:
+
+  1. Start: PRUEFEN      - gibt es neue/geaenderte/geloeschte Dateien?
+                           -> merken, Admins bekommen eine DM
+  2. Start: HERUNTERLADEN - neueste Version in den Ordner .update/
+                           laden, jede Datei per Pruefsumme kontrolliert
+  3. Start: EINSPIELEN   - alte Dateien sichern (.update/backup/),
+                           neue rein, im Repo geloeschte Dateien loeschen,
+                           bei geaenderter requirements.txt "pip install",
+                           dann startet sich der Bot selbst einmal neu
+
+Zusaetzlich schaut der Bot alle 24 Stunden waehrend er laeuft nach:
+findet er etwas, laedt er es schon im Hintergrund herunter. Eingespielt
+wird es dann beim naechsten Start.
+
+
+SICHERHEIT
+----------
+- .env, data/ und .update/ werden NIE angefasst.
+- Geloescht werden nur Dateien, die frueher von GitHub kamen - deine
+  eigenen Dateien bleiben.
+- Python-Dateien mit Syntaxfehler werden gar nicht erst eingespielt.
+- Nach dem Einspielen ist das Update "auf Probe": Es gilt erst als gut,
+  wenn der Bot mit Discord verbunden ist, ALLE Erweiterungen geladen hat
+  und 1 Minute laeuft. Stuerzt er ab, laedt eine Erweiterung nicht oder
+  schafft er es in 2 Starts nicht -> die alten Dateien (und Pakete)
+  werden automatisch zurueckgeholt, der Bot startet neu und diese
+  kaputte Version wird nie wieder versucht (eine neuere schon).
+- Wird das Einspielen unterbrochen (Stromausfall, Absturz), holt der
+  naechste Start automatisch die Sicherung zurueck.
+- Ist GitHub nicht erreichbar, startet der Bot ganz normal.
+- ACHTUNG: Aenderst du Dateien direkt auf dem Server (z.B.
+  server_template.py), werden sie beim naechsten Update durch die
+  GitHub-Version ersetzt. Aenderungen also auf GitHub machen (oder mir
+  sagen). Die alte Version liegt dann in .update/backup/.
+
+
+BEFEHLE (nur Admins)
+--------------------
+/bot-update-status   Version, in welchem Schritt ein Update ist, was
+                     sich aendert, letzte Pruefung, Probleme
+/bot-update-check    jetzt sofort auf GitHub nachschauen (+ herunterladen)
+/bot-restart         Bot neu starten (mit Bestaetigung). Zaehlt als
+                     ganz normaler Start, also als einer der 3 Schritte.
+
+Alle Schritte (gefunden, heruntergeladen, eingespielt, laeuft gut,
+zurueckgerollt) kommen als DM an alle mit Administrator-Berechtigung.
+
+
+EINSTELLUNGEN (.env, alles optional)
+------------------------------------
+UPDATE_ENABLED=true            false schaltet es aus
+UPDATE_BRANCH=claude/sweet-davinci-8vo688   z.B. main, wenn wir spaeter
+                                            ueber Pull Requests freigeben
+UPDATE_REPO=ErikEdits/discord-bot
+UPDATE_GITHUB_TOKEN=           nur noetig, falls das Repo privat wird
+
+
+============================================================
  BOT UPDATE 3 - 19 neue Features
 ============================================================
 
