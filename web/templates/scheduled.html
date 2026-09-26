@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Scheduled - Bot Panel{% endblock %}
+{% block content %}
+<h1>Scheduled announcements</h1>
+<div class="section">
+    <h3>{% if editing %}Edit <code>{{ editing.id }}</code>{% else %}Schedule a new announcement{% endif %}</h3>
+    {% if channels %}
+    <form method="post" action="/scheduled/save" class="form-grid">
+        {% if editing %}<input type="hidden" name="item_id" value="{{ editing.id }}">{% endif %}
+        <div class="form-row">
+            {% if not editing %}
+            <div>
+                <label for="channel_id">Channel</label>
+                <select name="channel_id" id="channel_id">
+                    {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.label }}</option>{% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div>
+                <label for="when">When ({{ timezone }})</label>
+                <input type="datetime-local" name="when" id="when" value="{{ editing.input_value if editing else '' }}" required>
+            </div>
+            <div>
+                <label for="ping">Ping</label>
+                <select name="ping" id="ping">
+                    {% for value, label in [("none", "No ping"), ("everyone", "@everyone"), ("role:Announcements", "@Announcements role")] %}
+                    <option value="{{ value }}" {% if editing and editing.ping == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div>
+            <label for="title">Title</label>
+            <input type="text" name="title" id="title" maxlength="256" value="{{ editing.title if editing else '' }}" required>
+        </div>
+        <div>
+            <label for="message">Text (Discord markdown works)</label>
+            <textarea name="message" id="message" maxlength="4000" style="min-height: 160px" required>{{ editing.message if editing else '' }}</textarea>
+        </div>
+        <div>
+            <button type="submit">{% if editing %}Save changes{% else %}Schedule{% endif %}</button>
+            {% if editing %}<a href="/scheduled" class="muted" style="margin-left: 12px">Cancel</a>{% endif %}
+        </div>
+    </form>
+    {% else %}
+    <div class="empty">Bot not connected to Discord yet.</div>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h3>Upcoming</h3>
+    {% if items %}
+    <table>
+        <thead><tr><th>When</th><th>Channel</th><th>Title</th><th>Ping</th><th></th></tr></thead>
+        <tbody>
+        {% for i in items %}
+            <tr>
+                <td>{{ i.local }}</td>
+                <td class="muted">{{ i.channel_label }}</td>
+                <td><strong>{{ i.title }}</strong><div class="faq-answer">{{ i.message[:200] }}{% if i.message|length > 200 %}…{% endif %}</div></td>
+                <td class="muted">{{ {"none": "-", "everyone": "@everyone"}.get(i.ping, "@" ~ i.ping[5:]) }}</td>
+                <td>
+                    <a href="/scheduled?edit={{ i.id }}"><button class="small" type="button">Edit</button></a>
+                    <form method="post" action="/scheduled/delete">
+                        <input type="hidden" name="item_id" value="{{ i.id }}">
+                        <button class="small danger" onclick="return confirm('Delete this scheduled announcement?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Nothing scheduled.</div>
+    {% endif %}
+</div>
+{% endblock %}

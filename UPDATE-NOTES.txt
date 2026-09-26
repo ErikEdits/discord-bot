@@ -1,0 +1,389 @@
+============================================================
+ BOT UPDATE 4 - Automatische Updates von GitHub
+============================================================
+
+EINMALIG: Diese Version noch EINMAL von Hand hochladen (wie bisher).
+Ab dann holt sich der Bot alle weiteren Updates selbst.
+.env und data-Ordner wie immer behalten.
+
+
+WIE ES FUNKTIONIERT
+-------------------
+Der Bot vergleicht seine Dateien mit dem GitHub-Repo
+(ErikEdits/discord-bot, Branch claude/sweet-davinci-8vo688).
+Pro Start des Bots passiert EIN Schritt:
+
+  1. Start: PRUEFEN      - gibt es neue/geaenderte/geloeschte Dateien?
+                           -> merken, Admins bekommen eine DM
+  2. Start: HERUNTERLADEN - neueste Version in den Ordner .update/
+                           laden, jede Datei per Pruefsumme kontrolliert
+  3. Start: EINSPIELEN   - alte Dateien sichern (.update/backup/),
+                           neue rein, im Repo geloeschte Dateien loeschen,
+                           bei geaenderter requirements.txt "pip install",
+                           dann startet sich der Bot selbst einmal neu
+
+Zusaetzlich schaut der Bot alle 24 Stunden waehrend er laeuft nach:
+findet er etwas, laedt er es schon im Hintergrund herunter. Eingespielt
+wird es dann beim naechsten Start.
+
+
+SICHERHEIT
+----------
+- .env, data/ und .update/ werden NIE angefasst.
+- Geloescht werden nur Dateien, die frueher von GitHub kamen - deine
+  eigenen Dateien bleiben.
+- Python-Dateien mit Syntaxfehler werden gar nicht erst eingespielt.
+- Nach dem Einspielen ist das Update "auf Probe": Es gilt erst als gut,
+  wenn der Bot mit Discord verbunden ist, ALLE Erweiterungen geladen hat
+  und 1 Minute laeuft. Stuerzt er ab, laedt eine Erweiterung nicht oder
+  schafft er es in 2 Starts nicht -> die alten Dateien (und Pakete)
+  werden automatisch zurueckgeholt, der Bot startet neu und diese
+  kaputte Version wird nie wieder versucht (eine neuere schon).
+- Wird das Einspielen unterbrochen (Stromausfall, Absturz), holt der
+  naechste Start automatisch die Sicherung zurueck.
+- Ist GitHub nicht erreichbar, startet der Bot ganz normal.
+- ACHTUNG: Aenderst du Dateien direkt auf dem Server (z.B.
+  server_template.py), werden sie beim naechsten Update durch die
+  GitHub-Version ersetzt. Aenderungen also auf GitHub machen (oder mir
+  sagen). Die alte Version liegt dann in .update/backup/.
+
+
+BEFEHLE (nur Admins)
+--------------------
+/bot-update-status   Version, in welchem Schritt ein Update ist, was
+                     sich aendert, letzte Pruefung, Probleme
+/bot-update-check    jetzt sofort auf GitHub nachschauen (+ herunterladen)
+/bot-restart         Bot neu starten (mit Bestaetigung). Zaehlt als
+                     ganz normaler Start, also als einer der 3 Schritte.
+
+Alle Schritte (gefunden, heruntergeladen, eingespielt, laeuft gut,
+zurueckgerollt) kommen als DM an alle mit Administrator-Berechtigung.
+
+
+EINSTELLUNGEN (.env, alles optional)
+------------------------------------
+UPDATE_ENABLED=true            false schaltet es aus
+UPDATE_BRANCH=claude/sweet-davinci-8vo688   z.B. main, wenn wir spaeter
+                                            ueber Pull Requests freigeben
+UPDATE_REPO=ErikEdits/discord-bot
+UPDATE_GITHUB_TOKEN=           nur noetig, falls das Repo privat wird
+
+
+============================================================
+ BOT UPDATE 3 - 19 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) data-Ordner und .env behalten, Bot neu starten.
+2) In Discord /update ausfuehren. Das legt an:
+   - #🧩-compatibility  (Info-Bereich) - Kompatibilitaets-Tabelle
+   - #👮-staff-team     (Info-Bereich) - Team-Liste
+   - #🔢-counting       (Community)   - Zaehl-Channel
+3) Discord-Login fuers Web-Panel einrichten (empfohlen):
+   a) discord.com/developers -> deine App -> OAuth2
+      - "Client Secret" kopieren (Reset Secret, falls noetig)
+      - bei "Redirects" eintragen:  <Panel-Adresse>/oauth/callback
+        z.B.  http://localhost:8080/oauth/callback
+   b) in die .env:
+        DISCORD_CLIENT_SECRET=<das Secret>
+        PANEL_PUBLIC_URL=http://localhost:8080   (Adresse, mit der du das Panel oeffnest)
+   c) Bot neu starten -> auf der Login-Seite gibt es "Login with Discord".
+      Rein kommt NUR, wer auf dem Server die Administrator-Berechtigung
+      hat. Das wird bei jedem Seitenaufruf neu geprueft - wer die
+      Berechtigung verliert, fliegt sofort raus.
+      Das Passwort-Login ist dann aus (PANEL_ALLOW_PASSWORD=true
+      schaltet es zusaetzlich wieder an).
+4) Die Bot-Rolle braucht "Server verwalten" (fuer Invite-Tracking)
+   und "Audit-Log anzeigen" (wer hat Rollen geaendert). Mit
+   Administrator-Recht hat er beides.
+
+
+WAS IST NEU
+-----------
+ 1. /mod <name>          Infokarte: Beschreibung, Versionen je Loader,
+                         Downloads, Links
+ 2. /changelog <mod>     Changelogs der letzten Versionen
+ 3. KOMPATIBILITAETS-TABELLE in #🧩-compatibility, aktualisiert sich
+    alle 6h und nach jedem Release selbst (/compatibility-refresh)
+ 4. DOWNLOAD-MEILENSTEINE (100, 1K, 10K, ...) werden in #📈-mod-stats
+    gefeiert
+ 5. COUNTDOWN: /countdown create titel wann [channel] [text] [ping]
+    zaehlt live runter, am Ende "Out now!" + Ping. /countdown list/delete
+ 6. FEEDBACK NACH RELEASES: 3 Tage nach einer neuen Version postet der
+    Bot automatisch eine Umfrage "Wie laeuft Version X?"
+ 7. BUG-FORMULAR: vor einem Bug-Ticket fragt ein Formular Mod+Version,
+    MC-Version+Loader, was passiert ist, Schritte, Crash-Log-Link ab
+ 8. AUTOMATISCHE FAQ-VORSCHLAEGE: fragt jemand in general/mod-support/
+    bot-commands/off-topic etwas, das zu einer FAQ passt, antwortet der
+    Bot mit der FAQ. Stichwoerter: /faq add ... keywords:install,download
+    (oder im Web-Panel). Staff wird nicht beantwortet.
+11. ZAEHL-CHANNEL #🔢-counting: gemeinsam hochzaehlen, nicht zweimal
+    hintereinander, falsche Zahl = zurueck auf 0. /counting (Stand),
+    /counting-set (Admin)
+12. "WUSSTEST DU?" jeden Tag um 17 Uhr in #💬-general.
+    /tip add, /tip remove, /tip list, /tip post (Admin)
+14. /afk [grund]  - wer dich erwaehnt, bekommt eine Notiz. Endet mit
+    deiner naechsten Nachricht.
+15. /profile [user] - Profilkarte als Bild (Level, Rang, XP,
+    Nachrichten, Voice-Zeit, Beitritt, Rollen)
+16. VOICE-XP: 4 XP pro Minute im Voice mit mind. einer anderen Person
+    (nicht selbst stumm/taub, nicht im AFK-Channel)
+17. INVITE-TRACKING: /invites leaderboard, /invites user @user
+    -> NUR fuer Admins sichtbar
+22. AUTO-SLOWMODE in general, off-topic, memes, media, introductions,
+    art, suggestions: je mehr los ist, desto laenger:
+      20 Nachrichten/Min -> 5s, 35 -> 10s, 50 -> 15s, 80 -> 30s
+    Wird schrittweise wieder runtergesetzt, wenn es 3 Min ruhiger ist.
+    Nie unter den normalen Slowmode des Channels. Log in #mod-logs.
+24. TEAM-LISTE in #👮-staff-team (Owner/Admin/Moderator), aktualisiert
+    sich selbst
+25. ROLLEN-AENDERUNGEN in #🗄-server-logs: welche Berechtigungen dazu/
+    weg, Name, Farbe - und WER es war. Auch bei Rollen-Vergabe an
+    Mitglieder steht jetzt dabei, wer sie gegeben hat.
+26. WEB-PANEL LOGIN MIT DISCORD (siehe oben)
+27. EMBED-BAUKASTEN im Web-Panel ("Embeds"): Titel, Text, Farbe,
+    Bilder, Felder, Link-Buttons, Live-Vorschau. Auch bestehende
+    Bot-Nachrichten per Link laden und bearbeiten.
+28. ROLLEN-PANEL im Web-Panel bearbeiten ("Role panel"): Buttons
+    hinzufuegen/entfernen/sortieren, Text aendern - geht sofort live.
+    Rollen mit gefaehrlichen Rechten (Admin, Bannen, Verwalten...)
+    koennen dort NICHT hinzugefuegt werden.
+29. FEHLER-ALARM: Fehler im Bot kommen per DM an alle mit
+    Administrator-Berechtigung (gebuendelt, gleicher Fehler max. alle
+    30 Min). /error-alerts off|on|test
+
+Gemerkt fuer spaeter (siehe BACKLOG.txt): Uebersetzen per Rechtsklick,
+"Nachricht melden", zweisprachiger Bot, bekannte Probleme im
+Crash-Analyzer.
+
+
+============================================================
+ BOT UPDATE 2 - 7 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) Den data-Ordner und die .env aus dem alten Bot-Ordner behalten
+   bzw. in den neuen Ordner kopieren (nicht auf GitHub, absichtlich).
+2) Bot neu starten - requirements.txt hat Pillow dazubekommen
+   (fuer das Willkommensbild). start-bot.bat installiert es selbst.
+3) In Discord /update ausfuehren. Das legt an:
+   - #🗺-roadmap           (Info-Bereich, nur lesen)
+   - #🧪-beta-program      (Info-Bereich, Panel mit Apply-Button)
+   - #🧪-beta-testing      (nur Beta Tester + Staff)
+   - #📝-beta-applications (Staff-Bereich, Bewerbungen)
+   - Voice "➕ Create Voice" (ganz oben im Voice-Bereich)
+   - Rolle "Beta Tester"
+   und aktualisiert das Mod-Download-Panel (neues Versions-Menue).
+4) Roadmap-Webhook holen: /roadmap webhook  (nur Admin, geheim halten)
+
+
+WAS IST NEU
+-----------
+ 1. DOWNLOAD-MENUE MIT VERSIONSFILTER
+    - Im Mod-Download-Panel gibt es ein zweites Menue
+      "filter by Minecraft version"
+    - Version waehlen -> Loader waehlen (Fabric/Forge/NeoForge/...)
+      -> fuer JEDEN Mod die passende Datei mit Direkt-Link
+    - Mods, die es fuer die Kombination nicht gibt, werden genannt
+
+ 3. BETA-TESTER-PROGRAMM (nur Admin)
+    - /beta open dauer:7d [slots:10]   Bewerbungen fuer einen
+                                        Zeitraum oeffnen
+    - /beta close, /beta status, /beta remove @user, /beta panel
+    - Nur waehrend der Zeitraum offen ist, funktioniert "Apply"
+      in #🧪-beta-program (Formular: MC-Version, Loader, warum,
+      Erfahrung)
+    - Bewerbungen landen in #📝-beta-applications, Accept/Reject
+      koennen NUR Leute mit Administrator-Berechtigung druecken
+    - Angenommen -> Rolle "Beta Tester" + DM, Zugang zu
+      #🧪-beta-testing. Abgelehnt -> DM (optional mit Grund)
+    - Schliesst automatisch am Ende oder wenn alle Plaetze voll sind
+
+ 4. GEPLANTE ANKUENDIGUNGEN (nur Admin)
+    - /schedule create channel wann [ping]  -> Formular fuer Titel+Text
+      "wann": 2026-10-01 18:00, 01.10. 18:00, 18:00 oder 2h / 3d
+    - /schedule list, /schedule edit, /schedule delete
+    - Im Web-Panel: Seite "Scheduled" (erstellen, bearbeiten, loeschen)
+    - Zeitzone Europe/Berlin
+
+ 5. STATISTIK-SEITE IM WEB-PANEL ("Stats")
+    - Mitglieder im Verlauf, Beitritte/Austritte, Nachrichten pro Tag,
+      Tickets pro Woche, aktivste Channels, Ticket-Bewertungen,
+      wer die meisten Tickets uebernommen hat, Top-Levels
+    - Zeitraum 7 / 30 / 90 / 180 Tage, Tabellenansicht unter jedem
+      Diagramm
+    - Gezaehlt wird ab jetzt (nur Zahlen, nie Nachrichteninhalte)
+
+ 6. ROADMAP PRO MOD
+    - #🗺-roadmap: ein Embed pro Mod mit Planned / In progress / Done,
+      Punkte sind nummeriert
+    - Admin-Befehle: /roadmap add, move, remove, delete-mod, refresh
+    - /roadmap webhook zeigt eine Webhook-URL fuer den Channel.
+      Damit kannst du (oder Claude Code / ein Script) von ueberall
+      posten. Normale Nachrichten erscheinen einfach im Channel,
+      Zeilen die mit "roadmap" anfangen sind Befehle:
+        roadmap add SmiteMod | planned | Config screen
+        roadmap move SmiteMod | #2 | done
+        roadmap remove SmiteMod | Config screen
+        roadmap delete SmiteMod
+      Beispiel:
+        curl -H "Content-Type: application/json" -d "{\"content\": \"roadmap add SmiteMod | progress | 1.21.2 port\"}" <URL>
+    - URL geleakt? /roadmap webhook regenerate:True
+
+ 7. EIGENE VOICE-CHANNELS ("Join to Create")
+    - "➕ Create Voice" betreten -> eigener Channel, man wird
+      reingezogen. Leer -> wird geloescht.
+    - /vc name, /vc limit, /vc lock, /vc unlock, /vc allow,
+      /vc kick, /vc transfer (nur der Besitzer)
+    - Geht der Besitzer, bekommt jemand anderes im Channel ihn
+
+10. WILLKOMMENSBILD
+    - Bei jedem Beitritt ein Bild mit dem Profilbild des Users,
+      Name und "Member #342" in #👋-welcome
+
+
+============================================================
+ BOT UPDATE - 14 neue Features
+============================================================
+
+NACH DEM HOCHLADEN EINMAL MACHEN
+--------------------------------
+1) Bot neu starten (bot-hosting.net Panel). requirements.txt hat sich
+   geaendert (discord.py >= 2.4, tzdata) - die Pakete muessen neu
+   installiert werden.
+2) In Discord /update ausfuehren. Das legt an:
+   - #🔍-crash-analyzer   (Info-Bereich, nur lesen, mit Button)
+   - #📈-mod-stats        (Info-Bereich, nur lesen)
+   - #🆙-level-ups        (Community, nur Member sehen es, nur lesen)
+   - Rollen Level 5 / 10 / 20 / 30 / 50
+   - Voice-Channel "👥 Members: ..." ganz oben im Info-Bereich
+3) Webhooks setzen (nur mit Administrator-Berechtigung):
+     /settings bug-webhook url:<deine Webhook-URL>
+     /settings backup-webhook url:<Webhook-URL fuer Backups>
+     /settings show    -> zeigt, was eingestellt ist
+   Beim Setzen schickt der Bot eine Testnachricht an den Webhook.
+4) Die Bot-Rolle in den Server-Einstellungen UEBER die Level-Rollen
+   ziehen, sonst kann er sie nicht vergeben.
+5) "Message Content Intent" muss im Developer Portal an sein
+   (war schon fuer Anti-Spam noetig). Crash-Analyzer, Link-Filter,
+   Vorschlaege und Levels brauchen ihn.
+
+
+WAS IST NEU
+-----------
+ 1. CRASH-ANALYZER
+    - Button in #🔍-crash-analyzer -> privater Channel (wie ein Ticket)
+    - User laedt latest.log / Crash-Report / hs_err_pid.log hoch
+      (.log .txt .gz, max 8 MB) oder schickt einen mclo.gs-Link
+    - Bot erkennt u.a.: fehlende/falsche Abhaengigkeiten (Fabric, Forge,
+      NeoForge), falsche Java-Version, doppelte Mods, zu wenig RAM,
+      Mixin-Fehler, Mod fuer falschen Loader, kaputte Config,
+      Grafiktreiber-Crashes, OptiFine+Sodium, Server-Probleme (EULA,
+      Port, Watchdog), "Code not found"-Fehler
+    - Dateien werden NUR im Speicher gelesen, nie gespeichert
+    - Channel wird nach 6h Inaktivitaet automatisch geloescht
+    - Button "Still broken? Open a ticket" -> oeffnet Bug-Ticket
+    - Pausieren: /maintenance crash
+
+ 3. MODRINTH: VERPASSTE RELEASES
+    - Releases, die erscheinen waehrend der Bot offline ist, werden
+      beim naechsten Start nachgepostet (max. 5 pro Projekt, aelteste
+      zuerst)
+
+ 4. DOWNLOAD-STATISTIK
+    - Jeden Montag 10:00 (Europe/Berlin) in #📈-mod-stats:
+      Downloads + Follower pro Mod und Zuwachs seit letzter Woche
+    - /modstats (fuer alle, nur du siehst es)
+    - /modstats-post (Admin, postet sofort)
+    - Einstellbar in server_template.py -> "mod_stats"
+      (daily/weekly, Wochentag, Uhrzeit)
+
+ 6. BUG-TICKETS AN WEBHOOK
+    - In Bug-Tickets gibt es fuer Staff den Button "Forward bug"
+    - Fenster mit Titel + Zusammenfassung -> geht mit komplettem
+      Verlauf (.txt) an den Webhook von /settings bug-webhook
+
+10. LINK-FILTER
+    - Loescht Einladungen zu ANDEREN Discord-Servern
+      (Einladungen zum eigenen Server sind erlaubt)
+    - Loescht Scam-Links: Fake-Seiten wie "dlscord-nitro.ru",
+      "modrlnth.com", "steamcommunlty.com" und "free nitro"-Koeder
+    - Erlaubte Seiten (Modrinth, GitHub, CurseForge, YouTube, ...)
+      werden nie angefasst -> Liste in server_template.py
+      "link_filter" -> "allowed_domains"
+    - Staff (Nachrichten verwalten) ist ausgenommen
+    - Jede Loeschung landet in #mod-logs
+    - Pausieren: /maintenance linkfilter
+
+11. TEMP-BAN
+    - /tempban @user dauer:7d grund:...  (braucht "Mitglieder bannen")
+    - User bekommt vorher eine DM mit Dauer und Grund
+    - Wird automatisch entbannt, auch nach einem Neustart
+
+12. MODERATIONS-VERLAUF
+    - /modhistory @user  (braucht "Mitglieder moderieren")
+    - Alle Verwarnungen, Timeouts, Kicks, Bans, Temp-Bans auf einen
+      Blick + aktueller Status (Timeout / gebannt / nicht mehr da)
+    - Funktioniert auch fuer User, die schon weg oder gebannt sind
+
+13. LEVELSYSTEM
+    - 15-25 XP pro Nachricht, max. 1x pro Minute (Spam bringt nichts)
+    - Kein XP in #bot-commands und #level-ups
+    - Level-Ups werden in #🆙-level-ups gepostet
+    - Level-Rollen bei 5 / 10 / 20 / 30 / 50 (nur die hoechste bleibt)
+    - /rank, /leaderboard
+    - Admin: /xp set, /xp reset
+
+14. GEWINNSPIELE (nur Admin)
+    - /giveaway start preis dauer [gewinner] [channel] [rolle]
+    - Button "Join" (nochmal klicken = austreten)
+    - Optional nur fuer eine bestimmte Rolle
+    - /giveaway end, /giveaway reroll, /giveaway list
+    - Ueberlebt Neustarts, Gewinner werden automatisch gezogen
+
+15. ERINNERUNGEN PER DM
+    - /remind in:2h text:Update testen
+    - /reminders list, /reminders delete
+
+16. MITGLIEDERZAEHLER
+    - Voice-Channel "👥 Members: 342" (man kann nicht joinen)
+    - Aktualisiert sich alle 10 Minuten (Discord-Limit)
+
+17. VORSCHLAEGE MIT STATUS
+    - Nachrichten in #💡-suggestions postet der Bot als Embed neu
+      (mit Bildern), mit 👍/👎 und Diskussions-Thread
+    - Buttons: Accept / In progress / Reject
+      -> NUR Leute mit Administrator-Berechtigung koennen sie benutzen
+    - Optionaler Grund, Embed wird farbig, Autor bekommt eine DM
+
+18. TICKETS
+    - "Claim"-Button: Staff uebernimmt ein Ticket
+    - /ticket-add @user, /ticket-remove @user (Staff)
+    - Nach dem Schliessen bekommt der Ersteller eine DM mit
+      1-5 Sternen, Bewertung landet in #📁-ticket-archive
+    - Moderatoren koennen jetzt auch fremde Tickets schliessen
+      (vorher ging das nur mit "Kanaele verwalten")
+
+19. WEB-PANEL
+    - Neue Seiten: FAQs (anlegen/loeschen), Polls (erstellen/schliessen,
+      auch Presets), Announce (Ankuendigung posten), Maintenance
+      (Features an/aus)
+    - Kein Neustart-Knopf
+
+20. AUTOMATISCHE BACKUPS
+    - Jeden Tag ab 04:00 schickt der Bot ein .zip an den Backup-Webhook:
+      alle Bot-Daten (Warns, Levels, FAQs, Polls, Giveaways, ...)
+      + Server-Struktur. Auf dem Bot-Server bleibt NICHTS liegen.
+    - /backup-now        (Admin) sofort ein Backup schicken
+    - /backup-restore    (Admin) Bot-Daten aus so einem .zip
+                          wiederherstellen (mit Bestaetigung).
+                          Channels und Rollen werden NICHT angefasst.
+    - Webhook-URLs sind nie im Backup enthalten.
+
+
+LOW_POWER=true
+--------------
+Schaltet zusaetzlich ab: Link-Filter, Crash-Analyzer, Mod-Statistik,
+Levels, Mitgliederzaehler.

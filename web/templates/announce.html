@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Announce - Bot Panel{% endblock %}
+{% block content %}
+<h1>Announcement</h1>
+<div class="section">
+    {% if channels %}
+    <form method="post" action="/announce" class="form-grid">
+        <div>
+            <label for="channel_id">Channel</label>
+            <select name="channel_id" id="channel_id">
+                {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.label }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="title">Title</label>
+            <input type="text" name="title" id="title" maxlength="256" required>
+        </div>
+        <div>
+            <label for="message">Message (Discord markdown works: **bold**, *italic*, links)</label>
+            <textarea name="message" id="message" maxlength="4000" style="min-height: 180px" required></textarea>
+        </div>
+        <label class="checkbox"><input type="checkbox" name="ping_everyone"> Ping @everyone</label>
+        <div><button type="submit" onclick="return confirm('Post this announcement?')">Post announcement</button></div>
+    </form>
+    {% else %}
+    <div class="empty">Bot not connected to Discord yet (or no channel it can write in).</div>
+    {% endif %}
+</div>
+{% endblock %}

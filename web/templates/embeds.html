@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Embed builder - Bot Panel{% endblock %}
+{% block content %}
+<style>
+.eb-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .eb-layout { grid-template-columns: 1fr; } }
+.eb-list-row { display: grid; grid-template-columns: 1fr 1.6fr auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.eb-list-row.btn-row { grid-template-columns: 1fr 1.6fr auto; }
+.eb-list-row label { margin: 0; }
+.preview-wrap { background: #313338; border-radius: 8px; padding: 16px; position: sticky; top: 16px; }
+.pv-bot { display: flex; gap: 12px; }
+.pv-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.pv-name { color: #f2f3f5; font-weight: 600; }
+.pv-name .tag { background: var(--accent); color: white; font-size: 10px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; vertical-align: 1px; }
+.pv-content { color: #dbdee1; white-space: pre-wrap; margin: 2px 0 4px; }
+.pv-embed { background: #2b2d31; border-left: 4px solid #5865f2; border-radius: 4px; padding: 12px 16px; max-width: 520px; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.pv-embed .main { min-width: 0; }
+.pv-author { font-size: 13px; font-weight: 600; color: #f2f3f5; margin-bottom: 6px; display: flex; gap: 6px; align-items: center; }
+.pv-author img { width: 22px; height: 22px; border-radius: 50%; }
+.pv-title { font-weight: 700; color: #f2f3f5; margin-bottom: 6px; }
+.pv-title.link { color: #00a8fc; }
+.pv-desc { color: #dbdee1; font-size: 14px; white-space: pre-wrap; }
+.pv-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.pv-field { grid-column: span 3; }
+.pv-field.inline { grid-column: span 1; }
+.pv-field .n { font-weight: 600; color: #f2f3f5; font-size: 13px; }
+.pv-field .v { color: #dbdee1; font-size: 13px; white-space: pre-wrap; }
+.pv-image { max-width: 100%; border-radius: 4px; margin-top: 12px; }
+.pv-thumb { width: 80px; height: 80px; object-fit: cover; border-radius: 4px; }
+.pv-footer { color: #b5bac1; font-size: 12px; margin-top: 8px; }
+.pv-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.pv-buttons span { background: #4e5058; color: white; padding: 6px 14px; border-radius: 4px; font-size: 13px; }
+.eb-result { margin-top: 10px; font-size: 13px; }
+</style>
+
+<h1>Embed builder</h1>
+<div class="eb-layout">
+    <div>
+        <div class="section form-grid">
+            <div class="form-row">
+                <div>
+                    <label for="channel">Post in channel</label>
+                    <select id="channel">{% for ch in channels %}<option value="{{ ch.id }}">{{ ch.label }}</option>{% endfor %}</select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div>
+                    <label for="edit_link">…or edit a bot message (paste its link)</label>
+                    <input type="text" id="edit_link" placeholder="https://discord.com/channels/…">
+                </div>
+                <div style="align-self: end"><button type="button" id="load" class="small">Load message</button></div>
+            </div>
+            <div>
+                <label for="content">Message text above the embed (optional)</label>
+                <textarea id="content" maxlength="2000" style="min-height: 60px"></textarea>
+            </div>
+        </div>
+
+        <div class="section form-grid">
+            <h3 style="margin-bottom: 0">Embed</h3>
+            <div class="form-row">
+                <div><label for="title">Title</label><input type="text" id="title" maxlength="256"></div>
+                <div><label for="color">Color</label><input type="color" id="color" value="#5865f2" style="width: 100%; height: 40px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px"></div>
+            </div>
+            <div><label for="url">Title link (optional)</label><input type="text" id="url" placeholder="https://…"></div>
+            <div><label for="description">Description (Discord markdown works)</label><textarea id="description" maxlength="4096" style="min-height: 140px"></textarea></div>
+            <div class="form-row">
+                <div><label for="author">Author name</label><input type="text" id="author" maxlength="256"></div>
+                <div><label for="author_icon">Author icon URL</label><input type="text" id="author_icon"></div>
+            </div>
+            <div class="form-row">
+                <div><label for="thumbnail">Thumbnail URL (small, top right)</label><input type="text" id="thumbnail"></div>
+                <div><label for="image">Image URL (large, bottom)</label><input type="text" id="image"></div>
+            </div>
+            <div class="form-row">
+                <div><label for="footer">Footer</label><input type="text" id="footer" maxlength="2048"></div>
+                <label class="checkbox" style="align-self: end"><input type="checkbox" id="timestamp"> Show current time</label>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Fields <span class="muted" style="font-size: 12px">(max. 25)</span></h3>
+            <div id="fields"></div>
+            <button type="button" class="small" id="add-field">+ Add field</button>
+        </div>
+
+        <div class="section">
+            <h3>Link buttons <span class="muted" style="font-size: 12px">(max. 25)</span></h3>
+            <div id="buttons"></div>
+            <button type="button" class="small" id="add-button">+ Add button</button>
+        </div>
+
+        <div class="section">
+            <button type="button" id="send">Post message</button>
+            <div class="eb-result" id="result"></div>
+        </div>
+    </div>
+
+    <div class="preview-wrap">
+        <div class="muted" style="font-size: 12px; margin-bottom: 10px">Preview</div>
+        <div class="pv-bot">
+            <div class="pv-avatar"></div>
+            <div style="min-width: 0; flex: 1">
+                <div class="pv-name">Bot<span class="tag">APP</span></div>
+                <div class="pv-content" id="pv-content"></div>
+                <div id="pv-embed"></div>
+                <div class="pv-buttons" id="pv-buttons"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const $ = (id) => document.getElementById(id);
+    const inputs = ['content', 'title', 'url', 'description', 'color', 'author', 'author_icon', 'thumbnail', 'image', 'footer', 'timestamp'];
+
+    function row(container, kind, data) {
+        const div = document.createElement('div');
+        div.className = 'eb-list-row' + (kind === 'button' ? ' btn-row' : '');
+        const a = document.createElement('input'); a.type = 'text';
+        const b = document.createElement(kind === 'field' ? 'textarea' : 'input');
+        if (kind === 'field') {
+            a.placeholder = 'Name'; a.maxLength = 256; b.placeholder = 'Value'; b.maxLength = 1024; b.style.minHeight = '40px';
+            a.value = data.name || ''; b.value = data.value || '';
+        } else {
+            b.type = 'text'; a.placeholder = 'Label'; a.maxLength = 80; b.placeholder = 'https://…';
+            a.value = data.label || ''; b.value = data.url || '';
+        }
+        div.append(a, b);
+        if (kind === 'field') {
+            const lab = document.createElement('label'); lab.className = 'checkbox';
+            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!data.inline;
+            lab.append(cb, document.createTextNode(' inline'));
+            div.append(lab);
+        }
+        const del = document.createElement('button'); del.type = 'button'; del.className = 'small danger'; del.textContent = '✕';
+        del.onclick = () => { div.remove(); render(); };
+        div.append(del);
+        div.addEventListener('input', render);
+        container.append(div);
+    }
+
+    function collect() {
+        const e = {};
+        inputs.slice(1).forEach(k => { e[k] = k === 'timestamp' ? $(k).checked : $(k).value; });
+        e.fields = [...$('fields').children].map(r => ({
+            name: r.children[0].value, value: r.children[1].value, inline: r.children[2].querySelector('input').checked }));
+        const buttons = [...$('buttons').children].map(r => ({label: r.children[0].value, url: r.children[1].value}));
+        return {content: $('content').value, embed: e, buttons, channel_id: $('channel').value, edit_link: $('edit_link').value.trim()};
+    }
+
+    function text(tag, cls, value) { const el = document.createElement(tag); if (cls) el.className = cls; el.textContent = value; return el; }
+    function img(cls, src) { const el = document.createElement('img'); el.className = cls; el.src = src; el.onerror = () => el.remove(); return el; }
+    const isUrl = (v) => /^https?:\/\//.test(v || '');
+
+    function render() {
+        const p = collect(), e = p.embed;
+        $('pv-content').textContent = p.content;
+        const box = $('pv-embed'); box.replaceChildren();
+        const hasEmbed = e.title || e.description || e.author || e.footer || isUrl(e.image) || isUrl(e.thumbnail) || e.fields.length;
+        if (hasEmbed) {
+            const emb = document.createElement('div'); emb.className = 'pv-embed'; emb.style.borderLeftColor = e.color;
+            const main = document.createElement('div'); main.className = 'main';
+            if (e.author) { const a = document.createElement('div'); a.className = 'pv-author'; if (isUrl(e.author_icon)) a.append(img('', e.author_icon)); a.append(document.createTextNode(e.author)); main.append(a); }
+            if (e.title) main.append(text('div', 'pv-title' + (isUrl(e.url) ? ' link' : ''), e.title));
+            if (e.description) main.append(text('div', 'pv-desc', e.description));
+            if (e.fields.length) {
+                const fs = document.createElement('div'); fs.className = 'pv-fields';
+                e.fields.forEach(f => { const d = document.createElement('div'); d.className = 'pv-field' + (f.inline ? ' inline' : ''); d.append(text('div', 'n', f.name), text('div', 'v', f.value)); fs.append(d); });
+                main.append(fs);
+            }
+            if (isUrl(e.image)) main.append(img('pv-image', e.image));
+            if (e.footer || e.timestamp) main.append(text('div', 'pv-footer', [e.footer, e.timestamp ? 'Today at ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : ''].filter(Boolean).join(' • ')));
+            emb.append(main);
+            if (isUrl(e.thumbnail)) emb.append(img('pv-thumb', e.thumbnail));
+            box.append(emb);
+        }
+        const bts = $('pv-buttons'); bts.replaceChildren();
+        p.buttons.forEach(b => { if (b.label) bts.append(text('span', '', b.label + ' ↗')); });
+        $('send').textContent = p.edit_link ? 'Update message' : 'Post message';
+    }
+
+    inputs.forEach(k => $(k).addEventListener('input', render));
+    $('edit_link').addEventListener('input', render);
+    $('add-field').onclick = () => { if ($('fields').children.length < 25) { row($('fields'), 'field', {}); render(); } };
+    $('add-button').onclick = () => { if ($('buttons').children.length < 25) { row($('buttons'), 'button', {}); render(); } };
+
+    function showResult(ok, msg, link) {
+        const r = $('result'); r.replaceChildren();
+        r.className = 'eb-result flash ' + (ok ? 'ok' : 'error');
+        r.append(document.createTextNode(msg));
+        if (link) { const a = document.createElement('a'); a.href = link; a.target = '_blank'; a.textContent = ' Open in Discord'; r.append(a); }
+    }
+
+    $('load').onclick = async () => {
+        const res = await fetch('/api/embeds/load?link=' + encodeURIComponent($('edit_link').value.trim()));
+        const data = await res.json();
+        if (!res.ok) return showResult(false, data.error || 'Could not load the message.');
+        $('content').value = data.content || '';
+        const e = data.embed || {};
+        ['title', 'url', 'description', 'author', 'author_icon', 'thumbnail', 'image', 'footer'].forEach(k => $(k).value = e[k] || '');
+        $('color').value = e.color || '#5865f2'; $('timestamp').checked = !!e.timestamp;
+        $('fields').replaceChildren(); (e.fields || []).forEach(f => row($('fields'), 'field', f));
+        $('buttons').replaceChildren(); (data.buttons || []).forEach(b => row($('buttons'), 'button', b));
+        render(); showResult(true, 'Message loaded - change it and click "Update message".');
+    };
+
+    $('send').onclick = async () => {
+        const p = collect();
+        if (!confirm(p.edit_link ? 'Update this message?' : 'Post this message?')) return;
+        const res = await fetch('/api/embeds/send', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p)});
+        const data = await res.json().catch(() => ({}));
+        showResult(res.ok, res.ok ? data.text : (data.error || 'Sending failed.'), data.link);
+    };
+    render();
+})();
+</script>
+{% endblock %}

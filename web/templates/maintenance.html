@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Maintenance - Bot Panel{% endblock %}
+{% block content %}
+<h1>Maintenance</h1>
+<div class="section">
+    <p class="muted">Features in maintenance reject users with the message below instead of working. Same as <code>/maintenance</code> in Discord.</p>
+    <table>
+        <thead><tr><th>Feature</th><th>Status</th><th>Message shown to users</th><th></th></tr></thead>
+        <tbody>
+        {% for f in features %}
+            <tr>
+                <td><strong>{{ f.label }}</strong></td>
+                <td>{% if f.enabled %}<span class="pill on">Maintenance</span>{% else %}<span class="pill off">Online</span>{% endif %}</td>
+                <td>
+                    <form method="post" action="/maintenance/set" id="form-{{ f.key }}">
+                        <input type="hidden" name="feature" value="{{ f.key }}">
+                        <input type="hidden" name="state" value="{{ 'off' if f.enabled else 'on' }}">
+                        <input type="text" name="message" value="{{ f.message }}" maxlength="500" placeholder="(default message)">
+                    </form>
+                </td>
+                <td>
+                    {% if f.enabled %}
+                    <button class="small" form="form-{{ f.key }}">Back online</button>
+                    {% else %}
+                    <button class="small danger" form="form-{{ f.key }}">Start maintenance</button>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

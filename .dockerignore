@@ -15,3 +15,4 @@ data/
 *.md
 invite-url.txt
 fly.toml
+.update/

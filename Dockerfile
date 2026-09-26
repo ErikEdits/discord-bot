@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY bot.py server_template.py ./
+COPY bot.py server_template.py crashlog_analyzer.py updater.py ./
 COPY cogs/ ./cogs/
 COPY web/ ./web/
 

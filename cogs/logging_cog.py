@@ -4,7 +4,7 @@ Routing (all under the LOGS category, staff-only):
     message -> #message-logs   (deletes, edits)
     member  -> #member-logs    (joins, leaves, role/nick changes, bans)
     voice   -> #voice-logs     (voice joins, leaves, moves)
-    server  -> #server-logs    (channel/role create+delete)
+    server  -> #server-logs    (channel/role create+delete, role permission changes - with who did it)
     mod     -> #mod-logs       (used by the moderation cog + AutoMod alerts)
 
 Falls back to #mod-logs when a themed channel doesn't exist yet
@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+from cogs.common import was_deleted_by_bot
 from server_template import CHANNELS
 
 log = logging.getLogger("setup-bot.logging")
@@ -55,6 +56,31 @@ async def _safe_send(channel: discord.TextChannel | None, *, embed: discord.Embe
         log.exception("Failed to send log embed")
 
 
+def _is_temp_voice(channel) -> bool:
+    """Join-to-create channels come and go all the time - don't flood #server-logs with them."""
+    try:
+        from cogs.temp_voice import is_temp_channel
+        return is_temp_channel(channel)
+    except Exception:
+        return False
+
+
+async def _actor(guild: discord.Guild, action: discord.AuditLogAction, target_id: int) -> str | None:
+    """Who did it, from the audit log (needs View Audit Log). None if unknown."""
+    try:
+        async for entry in guild.audit_logs(limit=6, action=action):
+            if getattr(entry.target, "id", None) == target_id and \
+                    (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 30:
+                return entry.user.mention if entry.user else None
+    except (discord.Forbidden, discord.HTTPException):
+        return None
+    return None
+
+
+def _perm_name(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
 def _truncate(text: str, limit: int = 1024) -> str:
     if not text:
         return "*(empty)*"
@@ -68,6 +94,8 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if message.guild is None or (message.author and message.author.bot):
+            return
+        if was_deleted_by_bot(message.id):
             return
         ch = _get_log_channel(message.guild, "message")
         if ch is None or ch.id == message.channel.id:
@@ -176,6 +204,10 @@ class Logging(commands.Cog):
             return
         embed = discord.Embed(title="Member Updated", color=0x9B59B6, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Member", value=after.mention, inline=False)
+        if added or removed:
+            by = await _actor(after.guild, discord.AuditLogAction.member_role_update, after.id)
+            if by:
+                embed.add_field(name="Changed by", value=by, inline=False)
         for name, value in changes:
             embed.add_field(name=name, value=_truncate(value), inline=False)
         await _safe_send(ch, embed=embed)
@@ -183,7 +215,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None or ch.id == getattr(channel, "id", None):
+        if ch is None or ch.id == getattr(channel, "id", None) or _is_temp_voice(channel):
             return
         embed = discord.Embed(title="Channel Created", color=0x2ECC71, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)
@@ -193,7 +225,7 @@ class Logging(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         ch = _get_log_channel(channel.guild, "server")
-        if ch is None:
+        if ch is None or _is_temp_voice(channel):
             return
         embed = discord.Embed(title="Channel Deleted", color=0xE74C3C, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=f"#{channel.name}", inline=True)
@@ -228,6 +260,9 @@ class Logging(commands.Cog):
             return
         embed = discord.Embed(title="Role Created", color=0x2ECC71, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Role", value=role.mention, inline=True)
+        by = await _actor(role.guild, discord.AuditLogAction.role_create, role.id)
+        if by:
+            embed.add_field(name="By", value=by, inline=True)
         await _safe_send(ch, embed=embed)
 
     @commands.Cog.listener()
@@ -237,6 +272,43 @@ class Logging(commands.Cog):
             return
         embed = discord.Embed(title="Role Deleted", color=0xE74C3C, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Name", value=role.name, inline=True)
+        by = await _actor(role.guild, discord.AuditLogAction.role_delete, role.id)
+        if by:
+            embed.add_field(name="By", value=by, inline=True)
+        await _safe_send(ch, embed=embed)
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        changes = []
+        if before.name != after.name:
+            changes.append(("Name", f"`{before.name}` -> `{after.name}`"))
+        if before.color != after.color:
+            changes.append(("Color", f"`{before.color}` -> `{after.color}`"))
+        if before.hoist != after.hoist:
+            changes.append(("Shown separately", f"{before.hoist} -> {after.hoist}"))
+        if before.mentionable != after.mentionable:
+            changes.append(("Mentionable", f"{before.mentionable} -> {after.mentionable}"))
+        if before.permissions != after.permissions:
+            old, new = dict(before.permissions), dict(after.permissions)
+            granted = [_perm_name(p) for p, v in new.items() if v and not old.get(p)]
+            revoked = [_perm_name(p) for p, v in old.items() if v and not new.get(p)]
+            if granted:
+                changes.append(("\u2705 Permissions granted", ", ".join(granted)))
+            if revoked:
+                changes.append(("\u274C Permissions removed", ", ".join(revoked)))
+        if not changes:
+            return  # position-only changes happen a lot when roles are dragged around
+        ch = _get_log_channel(after.guild, "server")
+        if ch is None:
+            return
+        dangerous = any(n.startswith("\u2705") and ("Administrator" in v or "Manage" in v) for n, v in changes)
+        embed = discord.Embed(title="Role Updated", color=0xE67E22 if dangerous else 0x3498DB,
+                              timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="Role", value=after.mention, inline=True)
+        by = await _actor(after.guild, discord.AuditLogAction.role_update, after.id)
+        embed.add_field(name="By", value=by or "unknown", inline=True)
+        for name, value in changes:
+            embed.add_field(name=name, value=_truncate(value), inline=False)
         await _safe_send(ch, embed=embed)
 
 

@@ -127,7 +127,7 @@ button.danger { background: var(--danger); }
 button.danger:hover { background: #c63239; }
 button.small { padding: 4px 10px; font-size: 12px; }
 
-input[type="text"], input[type="password"] {
+input[type="text"], input[type="password"], input[type="number"], input[type="datetime-local"], select, textarea {
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
@@ -204,3 +204,22 @@ input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
     font-weight: 400;
     margin-left: 8px;
 }
+
+/* Management pages */
+nav { flex-wrap: wrap; }
+textarea { min-height: 90px; resize: vertical; font-family: inherit; }
+select { cursor: pointer; }
+.form-grid { display: grid; gap: 12px; }
+.form-grid label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.checkbox { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.flash { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
+.flash.ok { background: rgba(35,165,90,0.15); color: var(--success); border: 1px solid rgba(35,165,90,0.4); }
+.flash.error { background: rgba(242,63,67,0.12); color: var(--danger); border: 1px solid rgba(242,63,67,0.4); }
+.pill.on { background: rgba(240,177,50,0.2); color: var(--warn); }
+.pill.off { background: rgba(35,165,90,0.2); color: var(--success); }
+.faq-answer { white-space: pre-wrap; color: var(--muted); max-width: 640px; }
+td form { display: inline; }
+
+.discord-login { width: 100%; padding: 12px; background: #5865f2; font-weight: 600; }
+.discord-login:hover { background: #4752c4; }

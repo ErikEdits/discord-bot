@@ -4,14 +4,19 @@
   Saved answers to common questions (install steps, crash logs, MC version...).
   Stored per-guild in data/faqs.json.
 
-- Suggestion voting: in the suggestions channel the bot auto-adds up/down
-  reactions and opens a discussion thread for each new suggestion.
+- Suggestions: every message in the suggestions channel is reposted by the bot
+  as an embed (with attachments), gets up/down reactions and a discussion
+  thread. Buttons under it set the status - Accept / In progress / Reject -
+  and can only be used by members with the Administrator permission. The
+  author gets a DM when the status changes. Stored in data/suggestions.json.
 
 - /announce: post a clean embed announcement to a chosen channel as the bot.
 """
 
 import json
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +24,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.common import is_admin, load_json, mark_bot_delete, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.community")
@@ -26,6 +32,16 @@ log = logging.getLogger("setup-bot.community")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 FAQ_FILE = DATA_DIR / "faqs.json"
+SUGGESTIONS_FILE = DATA_DIR / "suggestions.json"
+MAX_REUPLOAD_BYTES = 8 * 1024 * 1024
+
+# status key -> (label shown in the embed, color, button emoji)
+SUGGESTION_STATUS = {
+    "open":     ("\U0001F5F3\uFE0F Open for voting", 0x5865F2, None),
+    "accepted": ("\u2705 Accepted",                 0x57F287, "\u2705"),
+    "progress": ("\U0001F6E0\uFE0F In progress",      0xF1C40F, "\U0001F6E0\uFE0F"),
+    "rejected": ("\u274C Rejected",                 0xE74C3C, "\u274C"),
+}
 
 UP = "\U0001F44D"    # thumbs up
 DOWN = "\U0001F44E"  # thumbs down
@@ -49,13 +65,143 @@ def _guild_faqs(guild_id: int) -> dict:
     return _load_faqs().get(str(guild_id), {})
 
 
+QUESTION_START = re.compile(
+    r"^(how|why|where|what|when|which|can|could|does|do|is|are|anyone|help|"
+    r"wie|wo|warum|was|wann|welche|kann|geht|gibt|hat|hilfe)\b", re.IGNORECASE)
+
+
+def parse_keywords(text: str | None) -> list[str]:
+    return [k.strip().lower() for k in (text or "").split(",") if len(k.strip()) >= 3][:20]
+
+
+def match_faq(content: str, faqs: dict) -> str | None:
+    """Return the FAQ name whose name/keywords match a question best, or None."""
+    text = content.lower()
+    if "?" not in text and not QUESTION_START.search(text.strip()):
+        return None
+    best, best_score = None, 0
+    for name, entry in faqs.items():
+        triggers = {name.replace("-", " ").replace("_", " ")} | set(entry.get("keywords", []))
+        score = 0
+        for trigger in triggers:
+            if len(trigger) >= 3 and re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", text):
+                score += 1 + trigger.count(" ")  # multi-word keywords count more
+        if score > best_score:
+            best, best_score = name, score
+    return best
+
+
 def _suggestions_config() -> dict:
     return SERVER_TEMPLATE.get("suggestions", {})
+
+
+def _load_suggestions() -> dict:
+    data = load_json(SUGGESTIONS_FILE)
+    data.setdefault("next_number", 1)
+    data.setdefault("suggestions", {})
+    return data
+
+
+def _suggestion_by_message(data: dict, message_id: int):
+    for number, entry in data["suggestions"].items():
+        if entry.get("message_id") == message_id:
+            return number, entry
+    return None, None
+
+
+def _apply_status(embed: discord.Embed, status: str, by: discord.abc.User | None, reason: str) -> discord.Embed:
+    label, color, _emoji = SUGGESTION_STATUS[status]
+    embed.color = color
+    value = label
+    if by is not None:
+        value += f" by {by.mention}"
+    if reason:
+        value += f"\n> {reason[:900]}"
+    for i, field in enumerate(embed.fields):
+        if field.name == "Status":
+            embed.set_field_at(i, name="Status", value=value, inline=False)
+            break
+    else:
+        embed.add_field(name="Status", value=value, inline=False)
+    return embed
+
+
+class SuggestionStatusModal(discord.ui.Modal):
+    reason = discord.ui.TextInput(
+        label="Reason / note (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=900,
+    )
+
+    def __init__(self, message: discord.Message, status: str):
+        super().__init__(title=f"Mark suggestion as: {SUGGESTION_STATUS[status][0]}"[:45])
+        self.message = message
+        self.status = status
+
+    async def on_submit(self, interaction: discord.Interaction):
+        data = _load_suggestions()
+        number, entry = _suggestion_by_message(data, self.message.id)
+        embed = self.message.embeds[0] if self.message.embeds else discord.Embed()
+        embed = _apply_status(embed, self.status, interaction.user, self.reason.value.strip())
+        await interaction.response.edit_message(embed=embed)
+        if entry is None:
+            return
+        entry["status"] = self.status
+        entry["status_by"] = interaction.user.id
+        entry["status_reason"] = self.reason.value.strip()
+        save_json(SUGGESTIONS_FILE, data)
+        log.info("Suggestion #%s set to %s by %s", number, self.status, interaction.user)
+        if not _suggestions_config().get("dm_author_on_status", True):
+            return
+        author = interaction.guild.get_member(entry.get("author_id", 0)) if interaction.guild else None
+        if author is None:
+            return
+        label = SUGGESTION_STATUS[self.status][0]
+        text = (f"Your suggestion **#{number}** on **{interaction.guild.name}** was marked as **{label}**.\n"
+                f"> {entry.get('content', '')[:300]}\n")
+        if self.reason.value.strip():
+            text += f"\n**Note from the team:** {self.reason.value.strip()}\n"
+        text += f"\n{self.message.jump_url}"
+        try:
+            await author.send(text)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
+class SuggestionStatusView(discord.ui.View):
+    """Status buttons under each suggestion. Administrator only."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _set(self, interaction: discord.Interaction, status: str):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message(
+                "Only members with the Administrator permission can change the status.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(SuggestionStatusModal(interaction.message, status))
+
+    @discord.ui.button(label="Accept", emoji="\u2705", style=discord.ButtonStyle.success, custom_id="suggestion:accepted")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "accepted")
+
+    @discord.ui.button(label="In progress", emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.primary,
+                       custom_id="suggestion:progress")
+    async def progress(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "progress")
+
+    @discord.ui.button(label="Reject", emoji="\u274C", style=discord.ButtonStyle.danger, custom_id="suggestion:rejected")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "rejected")
 
 
 class Community(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        bot.add_view(SuggestionStatusView())
+        self._faq_cooldown: dict = {}
 
     # ---------- FAQ ----------
 
@@ -92,9 +238,10 @@ class Community(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @faq_group.command(name="add", description="Add or update a FAQ answer (admin).")
-    @app_commands.describe(name="Short key, e.g. install", answer="The answer text")
+    @app_commands.describe(name="Short key, e.g. install", answer="The answer text",
+                           keywords="Optional, comma-separated: words that make the bot suggest this FAQ automatically")
     @app_commands.default_permissions(administrator=True)
-    async def faq_add(self, interaction: discord.Interaction, name: str, answer: str):
+    async def faq_add(self, interaction: discord.Interaction, name: str, answer: str, keywords: str | None = None):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
@@ -102,6 +249,7 @@ class Community(commands.Cog):
         g = str(interaction.guild_id)
         data.setdefault(g, {})[name.lower()] = {
             "answer": answer,
+            "keywords": parse_keywords(keywords),
             "added_by": str(interaction.user),
             "ts": datetime.now(timezone.utc).isoformat(),
         }
@@ -138,6 +286,43 @@ class Community(commands.Cog):
         embed.set_footer(text="Show one with /faq show")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # ---------- Automatic FAQ suggestions ----------
+
+    @commands.Cog.listener("on_message")
+    async def suggest_faq(self, message: discord.Message):
+        cfg = SERVER_TEMPLATE.get("faq_suggestions", {})
+        if not cfg.get("enabled", True) or message.guild is None or message.author.bot:
+            return
+        channel = message.channel
+        channel_name = getattr(getattr(channel, "parent", None), "name", None) if isinstance(channel, discord.Thread) else channel.name
+        if channel_name not in set(cfg.get("channels", [])):
+            return
+        if isinstance(message.author, discord.Member) and message.author.guild_permissions.manage_messages:
+            return  # staff answers themselves
+        faqs = _guild_faqs(message.guild.id)
+        if not faqs:
+            return
+        name = match_faq(message.content or "", faqs)
+        if name is None:
+            return
+        now = time.monotonic()
+        cooldown = float(cfg.get("cooldown_minutes", 10)) * 60
+        key = (channel.id, name)
+        if now - self._faq_cooldown.get(key, 0) < cooldown or now - self._faq_cooldown.get(("user", message.author.id), 0) < 120:
+            return
+        self._faq_cooldown[key] = now
+        self._faq_cooldown[("user", message.author.id)] = now
+        embed = discord.Embed(
+            title=f"\U0001F4A1 This might help: {name}",
+            description=faqs[name]["answer"][:4000],
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"Automatic suggestion \u00b7 /faq show {name}")
+        try:
+            await message.reply(embed=embed, mention_author=False)
+        except discord.HTTPException:
+            pass
+
     # ---------- Announce ----------
 
     @app_commands.command(name="announce", description="Post an embed announcement to a channel as the bot (admin).")
@@ -164,7 +349,7 @@ class Community(commands.Cog):
             return
         await interaction.response.send_message(f"Announcement posted in {channel.mention}.", ephemeral=True)
 
-    # ---------- Suggestion voting ----------
+    # ---------- Suggestions ----------
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -176,19 +361,73 @@ class Community(commands.Cog):
         suggestions_name = CHANNELS.get("suggestions")
         if not suggestions_name or message.channel.name != suggestions_name:
             return
-        # Auto up/down vote reactions
+        if not message.content.strip() and not message.attachments:
+            return
+        if self.bot.intents.message_content:
+            try:
+                await self._repost_suggestion(message)
+                return
+            except discord.Forbidden:
+                log.warning("Missing permission to repost suggestions - falling back to reactions only")
+            except Exception:
+                log.exception("Failed to repost suggestion")
+        await self._decorate(message, f"Suggestion by {message.author.display_name}")
+
+    async def _decorate(self, message: discord.Message, thread_name: str) -> None:
         try:
             await message.add_reaction(UP)
             await message.add_reaction(DOWN)
         except (discord.Forbidden, discord.HTTPException):
             pass
-        # Optional discussion thread
-        if cfg.get("create_threads", True):
+        if _suggestions_config().get("create_threads", True):
             try:
-                name = f"Suggestion by {message.author.display_name}"[:90]
-                await message.create_thread(name=name, auto_archive_duration=cfg.get("thread_archive_minutes", 1440))
+                await message.create_thread(name=thread_name[:90],
+                                            auto_archive_duration=_suggestions_config().get("thread_archive_minutes", 1440))
             except (discord.Forbidden, discord.HTTPException):
                 pass
+
+    async def _repost_suggestion(self, message: discord.Message) -> None:
+        files = []
+        image_name = None
+        for attachment in message.attachments[:4]:
+            if attachment.size > MAX_REUPLOAD_BYTES:
+                continue
+            files.append(await attachment.to_file())
+            if image_name is None and (attachment.content_type or "").startswith("image/"):
+                image_name = attachment.filename
+        mark_bot_delete(message.id)
+        await message.delete()  # raises Forbidden before anything is posted
+
+        data = _load_suggestions()
+        number = data["next_number"]
+        data["next_number"] = number + 1
+        save_json(SUGGESTIONS_FILE, data)
+
+        author = message.author
+        embed = discord.Embed(
+            description=message.content[:4000] or "*(see attachment)*",
+            color=SUGGESTION_STATUS["open"][1],
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(name=f"Suggestion #{number} by {author.display_name}", icon_url=author.display_avatar.url)
+        if image_name:
+            embed.set_image(url=f"attachment://{image_name}")
+        _apply_status(embed, "open", None, "")
+        embed.set_footer(text=f"Vote with {UP} / {DOWN} \u00b7 discuss in the thread")
+        posted = await message.channel.send(embed=embed, files=files, view=SuggestionStatusView())
+
+        data = _load_suggestions()
+        data["suggestions"][str(number)] = {
+            "message_id": posted.id,
+            "channel_id": posted.channel.id,
+            "author_id": author.id,
+            "content": message.content[:1000],
+            "status": "open",
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+        save_json(SUGGESTIONS_FILE, data)
+        await self._decorate(posted, f"Suggestion #{number} by {author.display_name}")
+        log.info("Suggestion #%d by %s", number, author)
 
 
 async def setup(bot):

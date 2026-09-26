@@ -6,6 +6,14 @@ server_template.py. Existing items with the same name are left alone,
 so /setup is safe to run more than once.
 """
 
+# The self-updater runs FIRST (standard library only): it may download, install
+# or roll back an update before any other module - including discord.py - is
+# loaded. See updater.py.
+import updater
+
+if __name__ == "__main__":
+    updater.startup()
+
 import asyncio
 import logging
 import os
@@ -27,6 +35,7 @@ logging.basicConfig(
 log = logging.getLogger("setup-bot")
 
 from server_template import SERVER_TEMPLATE, CHANNELS
+from cogs.role_panel import ReactionRolesView, build_panel as build_role_panel, get_panel_config
 from web import log_buffer
 from web.app import app as panel_app, set_bot as set_panel_bot
 
@@ -76,13 +85,6 @@ CONTENT_FILTERS = {
     "all_members": discord.ContentFilter.all_members,
 }
 
-BUTTON_STYLES = {
-    "primary": discord.ButtonStyle.primary,
-    "secondary": discord.ButtonStyle.secondary,
-    "success": discord.ButtonStyle.success,
-    "danger": discord.ButtonStyle.danger,
-}
-
 VALID_AUTOMOD_PRESETS = {"profanity", "sexual_content", "slurs"}
 
 
@@ -100,60 +102,6 @@ intents.members = True  # Required for member join/leave/update events. Enable S
 # start; set MESSAGE_CONTENT_INTENT=false in .env to boot without it.
 intents.message_content = os.getenv("MESSAGE_CONTENT_INTENT", "true").lower() in ("1", "true", "yes")
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-
-
-class RoleToggleButton(discord.ui.Button):
-    def __init__(self, role_name, label, emoji, style, row):
-        super().__init__(
-            label=label,
-            emoji=emoji,
-            style=style,
-            custom_id=f"rr:{role_name}",
-            row=row,
-        )
-        self.role_name = role_name
-
-    async def callback(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Not in a server.", ephemeral=True)
-            return
-        role = discord.utils.get(guild.roles, name=self.role_name)
-        if role is None:
-            await interaction.response.send_message(
-                f"Role `{self.role_name}` is missing. Ask an admin to re-run `/setup`.",
-                ephemeral=True,
-            )
-            return
-        member = interaction.user if isinstance(interaction.user, discord.Member) else guild.get_member(interaction.user.id)
-        if member is None:
-            await interaction.response.send_message("Could not resolve your member object.", ephemeral=True)
-            return
-        try:
-            if role in member.roles:
-                await member.remove_roles(role, reason="Self-assign panel")
-                await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
-            else:
-                await member.add_roles(role, reason="Self-assign panel")
-                await interaction.response.send_message(f"Added **{role.name}**.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "I can't change that role - my role is below it in the hierarchy.",
-                ephemeral=True,
-            )
-
-
-class ReactionRolesView(discord.ui.View):
-    def __init__(self, buttons_def):
-        super().__init__(timeout=None)
-        for b in buttons_def:
-            self.add_item(RoleToggleButton(
-                role_name=b["role"],
-                label=b["label"],
-                emoji=b.get("emoji"),
-                style=BUTTON_STYLES.get(b.get("style", "secondary"), discord.ButtonStyle.secondary),
-                row=b.get("row", 0),
-            ))
 
 
 class RulesAcceptView(discord.ui.View):
@@ -209,6 +157,9 @@ class RulesAcceptButton(discord.ui.Button):
 
 if LOW_POWER:
     EXTENSIONS = (
+        "cogs.error_alerts",
+        "cogs.bot_updates",
+        "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
         "cogs.tickets",
@@ -216,21 +167,58 @@ if LOW_POWER:
         "cogs.backup",
         "cogs.poll",
         "cogs.community",
+        "cogs.reminders",
+        "cogs.giveaway",
+        "cogs.beta",
+        "cogs.scheduler",
+        "cogs.roadmap",
+        "cogs.temp_voice",
+        "cogs.countdown",
+        "cogs.counting",
+        "cogs.afk",
+        "cogs.tips",
+        "cogs.staff_list",
+        "cogs.invites",
     )
-    log.info("LOW_POWER mode: skipping cogs.logging_cog, modrinth, welcome_dm (background-heavy)")
+    log.info("LOW_POWER mode: skipping logging, anti-spam, link filter, modrinth, mod stats, welcome DM, "
+             "welcome image, crash analyzer, levels, stats and member counter (background-heavy)")
 else:
     EXTENSIONS = (
+        "cogs.error_alerts",  # first, so it also reports errors while the others load
+        "cogs.bot_updates",
+        "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
         "cogs.logging_cog",
         "cogs.antispam",
+        "cogs.linkfilter",
         "cogs.tickets",
+        "cogs.crash_analyzer",
         "cogs.modrinth",
+        "cogs.mod_stats",
         "cogs.welcome_dm",
         "cogs.utility",
         "cogs.backup",
         "cogs.poll",
         "cogs.community",
+        "cogs.levels",
+        "cogs.giveaway",
+        "cogs.reminders",
+        "cogs.member_counter",
+        "cogs.beta",
+        "cogs.scheduler",
+        "cogs.stats",
+        "cogs.roadmap",
+        "cogs.temp_voice",
+        "cogs.welcome_image",
+        "cogs.mod_info",
+        "cogs.countdown",
+        "cogs.counting",
+        "cogs.tips",
+        "cogs.afk",
+        "cogs.invites",
+        "cogs.auto_slowmode",
+        "cogs.staff_list",
     )
 
 
@@ -253,8 +241,39 @@ async def _start_web_panel():
     log.info("Web panel starting at http://%s:%d (login with PANEL_PASSWORD)", PANEL_HOST, PANEL_PORT)
 
 
+FAILED_EXTENSIONS: list[str] = []
+_update_health_checked = False
+
+
+async def restart_bot() -> None:
+    """Close the bot cleanly (cogs save their data); __main__ then starts a fresh process."""
+    updater.request_restart()
+    await bot.close()
+
+
+async def _update_health_check() -> None:
+    """A freshly installed update counts as healthy once the bot is connected with all
+    extensions loaded and keeps running for a minute. Otherwise it's rolled back."""
+    global _update_health_checked
+    if _update_health_checked or not updater.pending_health():
+        return
+    _update_health_checked = True
+    if FAILED_EXTENSIONS:
+        if updater.report_failure("extensions failed to load: " + ", ".join(FAILED_EXTENSIONS)):
+            await restart_bot()
+        return
+
+    async def _confirm():
+        await asyncio.sleep(updater.HEALTHY_AFTER_SECONDS)
+        if not bot.is_closed():
+            updater.mark_healthy()
+            log.info("Update confirmed healthy")
+
+    asyncio.create_task(_confirm(), name="update-health")
+
+
 async def _setup_hook():
-    panel = SERVER_TEMPLATE.get("reaction_role_panel")
+    panel = get_panel_config()  # web-panel edits (data/role_panel.json) win over the template
     if panel and panel.get("buttons"):
         bot.add_view(ReactionRolesView(panel["buttons"]))
         log.info("Registered persistent reaction-role view")
@@ -282,6 +301,7 @@ async def _setup_hook():
             log.info("Loaded extension: %s", ext)
         except Exception:
             log.exception("Failed to load extension: %s", ext)
+            FAILED_EXTENSIONS.append(ext)
     await _start_web_panel()
 
 bot.setup_hook = _setup_hook
@@ -299,6 +319,7 @@ async def on_ready():
             log.info("Synced %d command(s) to guild '%s'", len(synced), guild.name)
     except Exception:
         log.exception("Failed to sync slash commands")
+    await _update_health_check()
 
 
 @bot.event
@@ -706,6 +727,9 @@ ONBOARDING_PROMPT_TYPES = {
     "dropdown": discord.OnboardingPromptType.dropdown,
 }
 
+ONBOARDING_MIN_CHANNELS = 7
+ONBOARDING_MIN_WRITABLE = 5
+
 ONBOARDING_MODES = {
     "default": discord.OnboardingMode.default,
     "advanced": discord.OnboardingMode.advanced,
@@ -732,6 +756,19 @@ async def configure_onboarding(guild, template, role_lookup):
             log.info("Skipping onboarding default channel %s (@everyone can't view)", ch.name)
             continue
         default_channels.append(ch)
+
+    # Discord only enables onboarding with at least 7 default channels, 5 of which
+    # @everyone can write in. Our info channels are read-only and the chat channels
+    # are hidden until the rules are accepted, so check first instead of letting
+    # Discord reject it with error 350000.
+    writable = sum(1 for ch in default_channels if ch.permissions_for(guild.default_role).send_messages)
+    if len(default_channels) < ONBOARDING_MIN_CHANNELS or writable < ONBOARDING_MIN_WRITABLE:
+        log.info(
+            "Onboarding skipped: Discord needs %d default channels (%d where @everyone can write), "
+            "this server has %d (%d writable) visible to @everyone",
+            ONBOARDING_MIN_CHANNELS, ONBOARDING_MIN_WRITABLE, len(default_channels), writable,
+        )
+        return False
 
     prompts = []
     for prompt_def in config.get("prompts", []):
@@ -779,6 +816,12 @@ async def configure_onboarding(guild, template, role_lookup):
     except discord.Forbidden:
         log.warning("Missing permission to edit onboarding")
         return False
+    except discord.HTTPException as e:
+        if e.code == 350000:
+            log.warning("Onboarding skipped: Discord says the requirements are not met (%s)", e.text)
+        else:
+            log.exception("Failed to configure onboarding")
+        return False
     except Exception:
         log.exception("Failed to configure onboarding")
         return False
@@ -823,15 +866,7 @@ async def configure_welcome_screen(guild, template):
 
 
 def build_roles_panel(template):
-    panel = template.get("reaction_role_panel")
-    if not panel or not panel.get("buttons"):
-        return None, None
-    embed = discord.Embed(
-        title=panel.get("title", "Self-Assign Roles"),
-        description=panel.get("description", ""),
-        color=0x5865F2,
-    )
-    return embed, ReactionRolesView(panel["buttons"])
+    return build_role_panel()
 
 
 def build_ticket_panel(template):
@@ -857,8 +892,10 @@ def build_mod_download_panel(template, mods):
     embed = discord.Embed(
         title="Download my mods",
         description=(
-            f"Pick a mod from the dropdown below to get a **direct download link** "
+            f"Pick a mod from the first dropdown to get a **direct download link** "
             f"to its latest version.\n\n"
+            f"Or pick your **Minecraft version** in the second dropdown and then your loader - "
+            f"you'll get the right file of every mod for exactly that setup.\n\n"
             f"All projects: https://modrinth.com/user/{config['username']}"
         ),
         color=0x1bd96a,
@@ -899,6 +936,61 @@ async def post_mod_download_panel(guild, template, bot_user):
         return False
 
 
+def build_crash_panel(template):
+    if not template.get("crash_analyzer", {}).get("enabled"):
+        return None, None
+    from cogs.crash_analyzer import CrashPanelView, build_panel_embed
+    return build_panel_embed(), CrashPanelView()
+
+
+async def post_crash_panel(guild, template, bot_user):
+    channel = discord.utils.get(guild.text_channels, name=CHANNELS.get("crash_analyzer", ""))
+    if channel is None:
+        return False
+    embed, view = build_crash_panel(template)
+    if embed is None:
+        return False
+    if await channel_has_bot_messages(channel, bot_user):
+        return False
+    try:
+        await channel.send(embed=embed, view=view)
+        log.info("Posted crash analyzer panel to #%s", channel.name)
+        return True
+    except Exception:
+        log.exception("Failed to post crash analyzer panel")
+        return False
+
+
+def build_beta_panel(template):
+    if not template.get("beta", {}).get("enabled") or "cogs.beta" not in bot.extensions:
+        return None, None
+    from cogs.beta import BetaPanelView, build_panel_embed
+    return build_panel_embed(), BetaPanelView()
+
+
+async def post_beta_panel(guild, template, bot_user):
+    channel = discord.utils.get(guild.text_channels, name=CHANNELS.get("beta_program", ""))
+    if channel is None:
+        return False
+    embed, view = build_beta_panel(template)
+    if embed is None or await channel_has_bot_messages(channel, bot_user):
+        return False
+    try:
+        await channel.send(embed=embed, view=view)
+        log.info("Posted beta panel to #%s", channel.name)
+        return True
+    except Exception:
+        log.exception("Failed to post beta panel")
+        return False
+
+
+async def ensure_member_counter(guild):
+    if "cogs.member_counter" not in bot.extensions:
+        return "disabled"
+    from cogs.member_counter import ensure_counter_channel
+    return await ensure_counter_channel(guild)
+
+
 async def post_ticket_panel(guild, template, bot_user):
     channel = discord.utils.get(guild.text_channels, name=CHANNELS["tickets"])
     if channel is None:
@@ -918,7 +1010,7 @@ async def post_ticket_panel(guild, template, bot_user):
 
 
 async def post_reaction_role_panel(guild, template, bot_user):
-    panel = template.get("reaction_role_panel")
+    panel = get_panel_config()
     if not panel or not panel.get("buttons"):
         return False
     channel_name = panel["channel"]
@@ -1030,6 +1122,18 @@ async def refresh_panels(guild, template, bot_user):
         results["ticket_panel"] = await refresh_or_post(tickets_ch, bot_user, embed, view)
         await throttle()
 
+    crash_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("crash_analyzer", ""))
+    embed, view = build_crash_panel(template)
+    if crash_ch and embed is not None:
+        results["crash_panel"] = await refresh_or_post(crash_ch, bot_user, embed, view)
+        await throttle()
+
+    beta_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("beta_program", ""))
+    embed, view = build_beta_panel(template)
+    if beta_ch and embed is not None:
+        results["beta_panel"] = await refresh_or_post(beta_ch, bot_user, embed, view)
+        await throttle()
+
     config = template.get("modrinth", {})
     downloads_ch = discord.utils.get(guild.text_channels, name=CHANNELS.get("mod_downloads", ""))
     if downloads_ch and config.get("enabled") and config.get("username"):
@@ -1122,6 +1226,9 @@ async def setup_cmd(interaction: discord.Interaction):
     panel_posted = await post_reaction_role_panel(guild, SERVER_TEMPLATE, bot.user)
     ticket_panel_posted = await post_ticket_panel(guild, SERVER_TEMPLATE, bot.user)
     mod_download_posted = await post_mod_download_panel(guild, SERVER_TEMPLATE, bot.user)
+    crash_panel_posted = await post_crash_panel(guild, SERVER_TEMPLATE, bot.user)
+    beta_panel_posted = await post_beta_panel(guild, SERVER_TEMPLATE, bot.user)
+    counter_state = await ensure_member_counter(guild)
     welcome_screen_set = await configure_welcome_screen(guild, SERVER_TEMPLATE)
     onboarding_set = await configure_onboarding(guild, SERVER_TEMPLATE, role_lookup)
 
@@ -1135,8 +1242,11 @@ async def setup_cmd(interaction: discord.Interaction):
         f"- Reaction-role panel: **{'posted' if panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Ticket panel: **{'posted to #' + CHANNELS['tickets'] if ticket_panel_posted else 'skipped (already exists or channel missing)'}**",
         f"- Mod-download panel: **{'posted to #' + CHANNELS['mod_downloads'] if mod_download_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Crash-analyzer panel: **{'posted to #' + CHANNELS['crash_analyzer'] if crash_panel_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Beta panel: **{'posted to #' + CHANNELS['beta_program'] if beta_panel_posted else 'skipped (already exists or channel missing)'}**",
+        f"- Member counter: **{counter_state}**",
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped (needs Community Server)'}**",
-        f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (needs Community Server)'}**",
+        f"- Onboarding flow: **{'configured' if onboarding_set else 'skipped (Discord requirements not met - see log)'}**",
         "- Rules and welcome embeds posted where missing.",
         "",
         "Tip: drag your bot's role above the new roles so it can manage them.",
@@ -1190,6 +1300,7 @@ async def update_cmd(interaction: discord.Interaction):
     welcome_screen_set = await configure_welcome_screen(guild, SERVER_TEMPLATE)
     onboarding_set = await configure_onboarding(guild, SERVER_TEMPLATE, role_lookup)
     panel_results = await refresh_panels(guild, SERVER_TEMPLATE, bot.user)
+    counter_state = await ensure_member_counter(guild)
 
     panels_str = ", ".join(
         f"{name} {status}" for name, status in panel_results.items() if status
@@ -1205,6 +1316,7 @@ async def update_cmd(interaction: discord.Interaction):
         f"- Welcome screen: **{'configured' if welcome_screen_set else 'skipped'}**",
         f"- Onboarding: **{'configured' if onboarding_set else 'skipped'}**",
         f"- Panels: {panels_str}",
+        f"- Member counter: **{counter_state}**",
     ]
 
     log_embed = discord.Embed(
@@ -1390,4 +1502,8 @@ async def setup_preview(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    # log_handler=None: logging is already set up above; discord.py's own handler
+    # would print every discord.* line twice.
+    bot.run(TOKEN, log_handler=None)
+    if updater.restart_requested():
+        updater.restart_process()

@@ -11,13 +11,24 @@
 <nav>
     <span class="brand">Bot Panel</span>
     <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Dashboard</a>
+    <a href="/stats" {% if request.url.path == "/stats" %}class="active"{% endif %}>Stats</a>
     <a href="/tickets" {% if request.url.path == "/tickets" %}class="active"{% endif %}>Tickets</a>
     <a href="/warnings" {% if request.url.path == "/warnings" %}class="active"{% endif %}>Warnings</a>
+    <a href="/faqs" {% if request.url.path == "/faqs" %}class="active"{% endif %}>FAQs</a>
+    <a href="/polls" {% if request.url.path == "/polls" %}class="active"{% endif %}>Polls</a>
+    <a href="/announce" {% if request.url.path == "/announce" %}class="active"{% endif %}>Announce</a>
+    <a href="/scheduled" {% if request.url.path == "/scheduled" %}class="active"{% endif %}>Scheduled</a>
+    <a href="/embeds" {% if request.url.path == "/embeds" %}class="active"{% endif %}>Embeds</a>
+    <a href="/role-panel" {% if request.url.path == "/role-panel" %}class="active"{% endif %}>Role panel</a>
+    <a href="/maintenance" {% if request.url.path == "/maintenance" %}class="active"{% endif %}>Maintenance</a>
     <a href="/logs" {% if request.url.path == "/logs" %}class="active"{% endif %}>Logs</a>
+    {% set who = panel_user(request) %}{% if who %}<span class="muted" style="font-size: 12px">{{ who }}</span>{% endif %}
     <form action="/logout" method="post"><button class="small">Logout</button></form>
 </nav>
 {% endif %}
 <main>
+{% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash error">{{ err }}</div>{% endif %}
 {% block content %}{% endblock %}
 </main>
 </body>

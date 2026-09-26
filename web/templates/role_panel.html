@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Role panel - Bot Panel{% endblock %}
+{% block content %}
+<h1>Role panel</h1>
+<p class="muted">The buttons in the roles channel that let members give themselves roles. Changes go live right away.
+Roles with powerful permissions (admin, manage, ban, ...) can't be added here.</p>
+
+<div class="section">
+    <h3>Text</h3>
+    <form method="post" action="/role-panel/text" class="form-grid">
+        <div><label for="title">Title</label><input type="text" name="title" id="title" maxlength="256" value="{{ config.title }}"></div>
+        <div><label for="description">Description</label><textarea name="description" id="description" maxlength="4000" style="min-height: 120px">{{ config.description }}</textarea></div>
+        <div><button type="submit">Save text</button></div>
+    </form>
+</div>
+
+<div class="section">
+    <h3>Buttons <span class="pill">{{ buttons|length }} / 25</span></h3>
+    {% if buttons %}
+    <table>
+        <thead><tr><th>Row</th><th>Button</th><th>Role</th><th>Style</th><th></th></tr></thead>
+        <tbody>
+        {% for b in buttons %}
+            <tr>
+                <td class="muted">{{ (b.row or 0) + 1 }}</td>
+                <td>{{ b.emoji or "" }} <strong>{{ b.label }}</strong></td>
+                <td class="muted">{{ b.role }}</td>
+                <td><span class="pill">{{ b.style or "secondary" }}</span></td>
+                <td style="white-space: nowrap">
+                    {% set idx = loop.index0 %}
+                    {% for action, text in [("up", "↑"), ("down", "↓"), ("remove", "Remove")] %}
+                    <form method="post" action="/role-panel/change">
+                        <input type="hidden" name="index" value="{{ idx }}">
+                        <input type="hidden" name="action" value="{{ action }}">
+                        <button class="small{% if action == 'remove' %} danger{% endif %}"
+                                {% if action == 'remove' %}onclick="return confirm('Remove this button?')"{% endif %}>{{ text }}</button>
+                    </form>
+                    {% endfor %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No buttons yet.</div>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h3>Add a button</h3>
+    {% if roles %}
+    <form method="post" action="/role-panel/add" class="form-grid">
+        <div class="form-row">
+            <div>
+                <label for="role_id">Role</label>
+                <select name="role_id" id="role_id">{% for r in roles %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}</select>
+            </div>
+            <div><label for="label">Button text (default: role name)</label><input type="text" name="label" id="label" maxlength="80"></div>
+            <div><label for="emoji">Emoji (optional)</label><input type="text" name="emoji" id="emoji" maxlength="60" placeholder="🎮"></div>
+        </div>
+        <div class="form-row">
+            <div>
+                <label for="style">Color</label>
+                <select name="style" id="style">
+                    {% for s in styles %}<option value="{{ s }}" {% if s == "secondary" %}selected{% endif %}>{{ {"primary": "Blue", "secondary": "Grey", "success": "Green", "danger": "Red"}[s] }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="row">Row</label>
+                <select name="row" id="row">{% for i in range(5) %}<option value="{{ i }}">Row {{ i + 1 }}</option>{% endfor %}</select>
+            </div>
+        </div>
+        <div><button type="submit">Add button</button></div>
+    </form>
+    {% else %}
+    <div class="empty">No more roles that can be added safely (or the bot isn't connected). Create a role without special permissions below the bot's role first.</div>
+    {% endif %}
+</div>
+{% endblock %}
