@@ -15,7 +15,8 @@ What it checks:
                  auto slowmode, counting, backups, images, embed builder, ...)
   5. Storage     data folder writable, every data file readable, free disk space
   6. Services    Modrinth, GitHub (auto-update), configured webhooks, web panel,
-                 panel launcher (relay channel, webhook, a relayed panel request)
+                 panel launcher (relay channel, webhook, a relayed panel request),
+                 Minecraft logs (parser, store, log channel)
 
 Everything the test creates is prefixed "bot-selftest" and deleted at the end
 (also leftovers from an interrupted earlier run). Nothing is posted in real
@@ -712,8 +713,28 @@ async def service_checks(run: SelfTestRun):
             raise RuntimeError("MESSAGE_CONTENT_INTENT is off - the relay can't read launcher requests")
         return f"relay ok, {len(pl.load_state()['keys'])} launcher file(s) active"
 
+    async def minecraft_logs():
+        cog = run.bot.get_cog("McLogs")
+        if cog is None or cog.store is None:
+            raise RuntimeError("Minecraft log store not loaded")
+        from cogs.mclog_core import parse_line
+        ev = parse_line("BLOCK_PLACE | Test | STONE @ Location{world=CraftWorld{name=world},x=1.0,y=2.0,z=3.0,"
+                        "pitch=0.0,yaw=0.0}", 0)
+        if not (ev is not None and ev.player == "Test" and ev.obj == "STONE" and (ev.x, ev.y, ev.z) == (1, 2, 3)):
+            raise RuntimeError("log line parser broken")
+        st = await cog.db(cog.store.stats)
+        from cogs.mc_logs import _config, _state
+        channel = run.bot.get_channel(_state()["channel_id"] or 0)
+        if channel is None:
+            raise Warning_(f"no log channel set (/mclog channel) - {st['events']:,} events stored")
+        info = f"#{channel.name}, {st['events']:,} events, {st['size_mb']} / {_config().get('max_db_mb', 100)} MB"
+        if st["last"] and time.time() - st["last"] > 6 * 3600:
+            raise Warning_(f"{info} - nothing new for {int((time.time() - st['last']) / 3600)}h (server offline?)")
+        return info
+
     for name, func in (("Modrinth", modrinth), ("GitHub (auto-update)", github), ("Webhooks", webhooks),
-                       ("Web panel", web_panel), ("Panel launcher", panel_launcher), ("Backups", backups_recent)):
+                       ("Web panel", web_panel), ("Panel launcher", panel_launcher),
+                       ("Minecraft logs", minecraft_logs), ("Backups", backups_recent)):
         await run.check(g, name, func)
 
 

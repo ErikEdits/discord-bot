@@ -29,7 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import format_duration, parse_duration
+from cogs.common import format_duration, has_perm, parse_duration
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.poll")
@@ -319,7 +319,7 @@ class Poll(commands.Cog):
         dauer_stunden="How many hours the poll stays open (default 24)",
     )
     async def create(self, interaction: discord.Interaction, frage: str, optionen: str, dauer_stunden: float = 24.0):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         options = [o.strip() for o in optionen.split(",") if o.strip()]
@@ -330,7 +330,7 @@ class Poll(commands.Cog):
     @app_commands.choices(preset=_preset_choices())
     async def preset(self, interaction: discord.Interaction, preset: app_commands.Choice[str],
                      dauer_stunden: float | None = None):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         p = _preset_by_key(preset.value)
@@ -343,7 +343,7 @@ class Poll(commands.Cog):
     @group.command(name="close", description="Close a poll early and tally the result.")
     @app_commands.describe(poll_id="The poll ID (from /poll list or the create confirmation)")
     async def close(self, interaction: discord.Interaction, poll_id: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         state = _load_state()
@@ -360,7 +360,7 @@ class Poll(commands.Cog):
 
     @group.command(name="list", description="List running polls.")
     async def list_polls(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         state = _load_state()
@@ -387,7 +387,7 @@ class Poll(commands.Cog):
     )
     async def auto(self, interaction: discord.Interaction, enabled: bool | None = None,
                    duration: str | None = None, delay: str | None = None):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         from cogs.mod_info import auto_poll_settings, pending_feedback, save_auto_poll_settings

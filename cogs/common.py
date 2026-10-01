@@ -5,7 +5,8 @@
 - get_setting / set_setting: bot-wide settings in data/settings.json
   (webhook URLs, counter channel IDs, schedule bookkeeping).
 - parse_duration / format_duration: "1h30m", "2d", "90s" <-> timedelta.
-- is_admin / is_staff: permission checks shared by several cogs.
+- is_admin / is_staff / has_perm: permission checks shared by the cogs. They also
+  accept members the server owner unlocked the running command for (/grant).
 - post_to_webhook: send an embed + optional file to a Discord webhook URL.
 """
 
@@ -13,12 +14,14 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 
 import aiohttp
 import discord
+from discord import app_commands
 
 log = logging.getLogger("setup-bot.common")
 
@@ -100,18 +103,55 @@ def format_duration(delta: timedelta) -> str:
 
 # -------- Permissions -----------------------------------------------------
 
-def is_admin(user) -> bool:
+# The slash command being handled in this task ("poll create"). Set by
+# GrantAwareTree before every command, so the checks below know which command a
+# grant has to cover. Outside a command (buttons, events) it's None -> no grants.
+_CURRENT_COMMAND: ContextVar[str | None] = ContextVar("current_command", default=None)
+GRANTS_FILE = DATA_DIR / "grants.json"
+
+
+class GrantAwareTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        command = interaction.command
+        _CURRENT_COMMAND.set(command.qualified_name if command is not None else None)
+        return True
+
+
+def load_grants() -> dict:
+    """{guild_id: {user_id: ["mclog", "poll create", ...]}}"""
+    return load_json(GRANTS_FILE)
+
+
+def is_granted(user, command: str | None = None) -> bool:
+    """Did the server owner unlock this command (or its parent group) for this member?"""
+    command = command or _CURRENT_COMMAND.get()
+    guild = getattr(user, "guild", None)
+    if not command or guild is None:
+        return False
+    granted = set(load_grants().get(str(guild.id), {}).get(str(user.id), []))
+    parts = command.split()
+    return any(" ".join(parts[:i]) in granted for i in range(1, len(parts) + 1))
+
+
+def has_perm(user, permission: str) -> bool:
+    """Has the Discord permission (Administrator counts for all), or a grant for this command."""
     perms = getattr(user, "guild_permissions", None)
-    return bool(perms and perms.administrator)
+    if perms and (perms.administrator or getattr(perms, permission, False)):
+        return True
+    return is_granted(user)
+
+
+def is_admin(user) -> bool:
+    return has_perm(user, "administrator")
 
 
 def is_staff(member, support_role_names) -> bool:
-    """Staff = has one of the support roles, or Manage Channels / Administrator."""
+    """Staff = has one of the support roles, Manage Channels / Administrator, or a grant."""
     perms = getattr(member, "guild_permissions", None)
     if perms and (perms.administrator or perms.manage_channels):
         return True
     names = set(support_role_names or [])
-    return any(r.name in names for r in getattr(member, "roles", []))
+    return any(r.name in names for r in getattr(member, "roles", [])) or is_granted(member)
 
 
 # -------- Self-test ------------------------------------------------------

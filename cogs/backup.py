@@ -28,7 +28,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import DATA_DIR, get_setting, is_admin, post_to_webhook, save_json, set_setting, webhook_url
+from cogs.common import DATA_DIR, get_setting, has_perm, is_admin, post_to_webhook, save_json, set_setting, webhook_url
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.backup")
@@ -306,7 +306,7 @@ class Backup(commands.Cog):
     @app_commands.command(name="backup-config", description="Export this server's roles + channels + settings as a JSON file.")
     @app_commands.default_permissions(administrator=True)
     async def backup_config(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         guild = interaction.guild

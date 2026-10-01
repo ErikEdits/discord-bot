@@ -1,4 +1,95 @@
 ============================================================
+ BOT UPDATE 9 - Minecraft-Logs + Befehle freigeben
+============================================================
+
+MINECRAFT-LOGS  (alles nur Admin, mit /grant freigebbar)
+------------------------------------------------------------
+Einmalig:   /mclog channel #mc-server-ec
+            /mclog import hours:24      (aeltere Nachrichten einlesen)
+
+Der Bot liest ab dann alles mit, was dein EntityLagFix-Plugin in den
+Kanal schickt, auch das, was waehrend eines Neustarts kam.
+
+/mclog ask Frage         Frage ganz normal, deutsch oder englisch:
+                          "Was hat ColinTK gestern zwischen 14 und 16 Uhr
+                           abgebaut?", "Wer war heute online?",
+                          "Wer hat seit 10 Uhr Diamanten abgebaut?",
+                          "Was ist bei 100 64 -200 passiert?",
+                          "Gab es heute etwas Verdaechtiges?"
+                          Ohne KI-Key wertet der Bot selbst aus (kostenlos).
+/mclog player Name [from] [to]   alles, was ein Spieler gemacht hat:
+                          Online-Zeit, abgebaut/platziert, Befehle,
+                          Teleports, Tode, wo er meistens war
+                          + komplette Zeitleiste als Datei
+/mclog search            Filter: Spieler, Aktion, Material, Bereich
+                          (x, z, radius), Zeitraum
+/mclog status            was gespeichert ist, Groesse, Einstellungen
+Zeiten: 14:00, "gestern 14:00", 01.10. 9:30, 3h (= vor 3 Stunden)
+
+Optional KI (100 % kostenlos):
+  /mclog ai-key            OpenRouter-Key eintragen (openrouter.ai ->
+                           Keys). Formular, der Key steht nirgends im Chat
+                           und kommt nicht ins Backup. Leer = entfernen.
+  /mclog ai-model          freies Modell aussuchen (sonst automatisch)
+  Es werden NUR Modelle benutzt, die auf ":free" enden UND laut
+  OpenRouter 0 kosten - das prueft der Bot vor jeder Frage. Lade kein
+  Guthaben auf, dann kann nie etwas kosten. Freie Modelle haben ein
+  Tageslimit; ist es voll, antwortet der Bot selbst.
+  Hinweis: bei freien Modellen kann der Anbieter die Fragen mitlesen
+  (es gehen nur Spielernamen, Aktionen und Koordinaten raus).
+
+Speicher (bot-hosting.net):
+  - 4 Tage, hartes Limit 100 MB (server_template.py "mc_logs"), das
+    Aelteste fliegt zuerst raus. Test: 4 Tage mit ca. 13.000 Log-Zeilen
+    pro Stunde = 41 MB.
+  - Mob-Spawns werden nur gezaehlt (pro 10 Minuten und Gebiet), nicht
+    einzeln gespeichert. Bewegungen max. 1x pro 30 s und Spieler.
+  - Wird der Platz auf dem Server knapp, schrumpft der Bot den Speicher.
+  - data/mc_logs.db kommt nicht ins Backup (zu gross, sind ja Logs).
+
+VERDAECHTIGES -> SOFORT DM an dich und mini_paluten056
+  - Wechsel in Spectator oder Creative
+  - Vanish (Befehl oder Event), Unsichtbarkeit
+  - verdaechtige Befehle (/op, /give, /gamemode, /tp, //set, /vanish,
+    /fly, /lp ... Liste in server_template.py)
+  - sehr viel abgebaut (300 Bloecke in 5 Min.) oder viele wertvolle
+    Erze (20 in 10 Min. -> X-Ray?)
+  - Teleport in die Naehe (64 Bloecke) von ErikEdits oder ColinTK,
+    und Spectator-Spieler, die sich ihnen naehern
+  ErikEdits und ColinTK werden nie gemeldet.
+  /mclog trusted add|remove|list   wer nie gemeldet wird
+  /mclog notify add|remove|list    wer die DMs bekommt
+
+DAMIT DIE ERKENNUNG PERFEKT KLAPPT - Zeilen fuer dein Plugin:
+Der Bot versteht jede Zeile im Format  TYP | Spieler | ... | Location{...}
+Besonders wichtig:
+  PLAYER_GAME_MODE_CHANGE | Name | SURVIVAL -> SPECTATOR
+  PLAYER_TELEPORT | Name | Location{...von...} -> Location{...nach...} | cause=SPECTATE
+  PLAYER_COMMAND | Name | /gamemode spectator
+  PLAYER_VANISH | Name | on          (falls dein Vanish-Plugin ein Event hat)
+  PLAYER_MOVE | Name | Location{...} (alle 20-30 Sek. reicht - damit weiss
+                                      der Bot, wo ErikEdits/ColinTK stehen)
+  PLAYER_JOIN | Name | Location{...}  und  PLAYER_QUIT | Name
+Ohne PLAYER_MOVE nimmt der Bot die letzte bekannte Position (z.B. vom
+letzten Block, den ihr platziert/abgebaut habt, max. 10 Min. alt).
+
+
+BEFEHLE FREIGEBEN  (nur du als Server-Owner)
+------------------------------------------------------------
+/grant add @User befehl     z.B. /grant add @Colin mclog
+                            oder nur einen Teil: /grant add @Colin mclog ask
+/grant remove @User befehl
+/grant list
+Der User braucht keine Rolle. Damit er den Befehl in seiner /-Liste
+SIEHT, einmal in Discord:
+  Servereinstellungen -> Integrationen -> ErikEdits Bot -> den Befehl
+  (z.B. /mclog) anklicken -> "Rollen oder Mitglieder hinzufuegen" ->
+  User auswaehlen -> Haken gruen -> Speichern
+(Das kann ein Bot leider nicht selbst einstellen. Der Bot sagt dir die
+Schritte nach /grant add nochmal.)
+
+
+============================================================
  BOT UPDATE 8 - Auto-Umfragen und Tipps einstellen
 ============================================================
 

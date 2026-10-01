@@ -18,7 +18,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import format_duration, load_json, parse_duration, save_json
+from cogs.common import format_duration, has_perm, load_json, parse_duration, save_json
 from server_template import CHANNELS
 
 log = logging.getLogger("setup-bot.moderation")
@@ -110,7 +110,7 @@ class Moderation(commands.Cog):
     @app_commands.default_permissions(ban_members=True)
     async def tempban(self, interaction: discord.Interaction, member: discord.Member, duration: str,
                       reason: str = "No reason provided", delete_message_days: app_commands.Range[int, 0, 7] = 0):
-        if not interaction.user.guild_permissions.ban_members:
+        if not has_perm(interaction.user, "ban_members"):
             await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
             return
         delta = parse_duration(duration)
@@ -195,7 +195,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="The user (also works for users who already left or are banned)")
     @app_commands.default_permissions(moderate_members=True)
     async def modhistory(self, interaction: discord.Interaction, user: discord.User):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -258,7 +258,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(member="Member to time out", duration="e.g. 10m, 1h30m, 2d, 1w", reason="Reason shown in the audit log")
     @app_commands.default_permissions(moderate_members=True)
     async def timeout(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided"):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need the Moderate Members permission.", ephemeral=True)
             return
         delta = parse_duration(duration)
@@ -285,7 +285,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="untimeout", description="Remove an active timeout from a member.")
     @app_commands.default_permissions(moderate_members=True)
     async def untimeout(self, interaction: discord.Interaction, member: discord.Member, reason: str = "Manual removal"):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need the Moderate Members permission.", ephemeral=True)
             return
         try:
@@ -301,7 +301,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.default_permissions(kick_members=True)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-        if not interaction.user.guild_permissions.kick_members:
+        if not has_perm(interaction.user, "kick_members"):
             await interaction.response.send_message("You need Kick Members permission.", ephemeral=True)
             return
         try:
@@ -318,7 +318,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(member="Member to ban", reason="Audit log reason", delete_message_days="Days of recent messages to delete (0-7)")
     @app_commands.default_permissions(ban_members=True)
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided", delete_message_days: int = 0):
-        if not interaction.user.guild_permissions.ban_members:
+        if not has_perm(interaction.user, "ban_members"):
             await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
             return
         delete_message_days = max(0, min(7, delete_message_days))
@@ -336,7 +336,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="unban", description="Unban a user by ID.")
     @app_commands.default_permissions(ban_members=True)
     async def unban(self, interaction: discord.Interaction, user_id: str, reason: str = "Manual unban"):
-        if not interaction.user.guild_permissions.ban_members:
+        if not has_perm(interaction.user, "ban_members"):
             await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
             return
         try:
@@ -365,7 +365,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="purge", description="Delete the last N messages in this channel (1-100).")
     @app_commands.default_permissions(manage_messages=True)
     async def purge(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 100], member: discord.Member | None = None):
-        if not interaction.user.guild_permissions.manage_messages:
+        if not has_perm(interaction.user, "manage_messages"):
             await interaction.response.send_message("You need Manage Messages permission.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -387,7 +387,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="warn", description="Warn a member. Stored persistently.")
     @app_commands.default_permissions(moderate_members=True)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             return
         data = load_warnings()
@@ -412,7 +412,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="warnings", description="List a member's warnings.")
     @app_commands.default_permissions(moderate_members=True)
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             return
         data = load_warnings()
@@ -435,7 +435,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="clearwarnings", description="Clear all warnings for a member.")
     @app_commands.default_permissions(moderate_members=True)
     async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
-        if not interaction.user.guild_permissions.moderate_members:
+        if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             return
         data = load_warnings()

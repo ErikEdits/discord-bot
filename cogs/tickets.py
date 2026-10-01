@@ -26,7 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import is_staff, post_to_webhook, webhook_url
+from cogs.common import has_perm, is_staff, post_to_webhook, webhook_url
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.tickets")
@@ -626,7 +626,7 @@ class Tickets(commands.Cog):
     @app_commands.command(name="ticket-panel", description="Post the multi-button ticket panel in this channel.")
     @app_commands.default_permissions(administrator=True)
     async def ticket_panel(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         types_def = _config().get("types", [])

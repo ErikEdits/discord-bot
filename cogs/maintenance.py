@@ -19,6 +19,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.common import has_perm
+
 log = logging.getLogger("setup-bot.maintenance")
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -85,7 +87,7 @@ class Maintenance(commands.Cog):
     )
 
     async def _toggle(self, interaction: discord.Interaction, feature: str, state_value: str, message: str) -> None:
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         enabled = state_value == "on"
@@ -133,7 +135,7 @@ class Maintenance(commands.Cog):
 
     @group.command(name="status", description="Show the maintenance status of every feature.")
     async def status(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         data = _load()
