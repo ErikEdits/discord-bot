@@ -519,13 +519,15 @@ async def feature_checks(run: SelfTestRun):
         return f"{len(included)} data file(s), {max(1, len(data) // 1024)} KB, restore readable"
 
     async def images():
+        from cogs.avatar_log import render_change
         from cogs.profile_card import render_profile
         from cogs.welcome_image import render_card
         a = await asyncio.to_thread(render_card, None, "Test", "test", "Server", 1)
         b = await asyncio.to_thread(render_profile, None, "Test", "test", 0x5865F2, 3, 10, 100, 1, 500, 10, 5,
                                     "01 Jan 2026", [])
-        expect(a.startswith(b"\x89PNG") and b.startswith(b"\x89PNG"), "not PNG")
-        return "welcome image + profile card"
+        c = await asyncio.to_thread(render_change, None, None, "Test")
+        expect(all(x.startswith(b"\x89PNG") for x in (a, b, c)), "not PNG")
+        return "welcome image + profile card + avatar change"
 
     async def embed_builder():
         from web.app import build_embed_message

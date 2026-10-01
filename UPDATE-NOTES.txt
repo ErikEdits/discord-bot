@@ -1,4 +1,26 @@
 ============================================================
+ BOT UPDATE 7 - Profilbild-Aenderungen im Admin-Log
+============================================================
+
+Neuer Kanal #🖼-avatar-logs (Kategorie LOGS). Den sehen NUR Admin
+und Owner, Moderatoren nicht. Der Bot legt ihn beim Start selbst an.
+
+Aendert jemand sein Profilbild, postet der Bot dort:
+  - wer es war (Name, @Benutzername, User-ID)
+  - ein Bild: altes Profilbild -> neues Profilbild
+  - Links zu beiden Bildern
+Das Bild wird vom Bot gezeichnet und hochgeladen. Das alte Profilbild
+bleibt also sichtbar, auch wenn Discord es irgendwann loescht.
+
+Erkannt werden:
+  - das normale Discord-Profilbild
+  - ein extra Server-Profilbild (Nitro), auch wenn es entfernt wird
+Bots werden ignoriert. Niemand wird angepingt.
+
+Ausschalten: in server_template.py "avatar_log" -> "enabled": False
+
+
+============================================================
  BOT UPDATE 6 - Panel-Starter (Web-Panel auf deinem PC)
 ============================================================
 
