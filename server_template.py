@@ -43,6 +43,7 @@ CHANNELS = {
     "voice_logs":      "\U0001F50A-voice-logs",
     "server_logs":     "\U0001F5C4-server-logs",
     "bot_updates":     "\U0001F4E3-bot-updates",
+    "avatar_logs":     "\U0001F5BC-avatar-logs",
     "ticket_archive":  "\U0001F4C1-ticket-archive",
     "admin_only":      "\U0001F512-admin-only",
     "staff_vc":        "\U0001F6E1 Staff VC",
@@ -53,6 +54,17 @@ CHANNELS = {
     "study_vc":        "\U0001F4DA Study Hall",
     "afk_vc":          "\U0001F4A4 AFK",
     "create_vc":       "\u2795 Create Voice",
+}
+
+
+# Profile picture changes are only for administrators (not moderators), so this log
+# channel overrides the LOGS category permissions. Also used by cogs/avatar_log.py
+# when it has to create the channel itself.
+AVATAR_LOG_OVERWRITES = {
+    "@everyone": {"view_channel": False},
+    "Moderator": {"view_channel": False},
+    "Admin":     {"view_channel": True, "send_messages": False, "read_message_history": True},
+    "Owner":     {"view_channel": True, "send_messages": True,  "read_message_history": True},
 }
 
 
@@ -299,6 +311,8 @@ SERVER_TEMPLATE = {
                 {"name": CHANNELS["server_logs"],    "type": "text", "topic": "Channel and role changes."},
                 {"name": CHANNELS["ticket_archive"], "type": "text", "topic": "Transcripts of closed tickets."},
                 {"name": CHANNELS["bot_updates"],    "type": "text", "topic": "Automatic log of bot and server updates."},
+                {"name": CHANNELS["avatar_logs"],    "type": "text", "topic": "Profile picture changes (before / after). Administrators only.",
+                 "overwrites": AVATAR_LOG_OVERWRITES},
             ],
         },
     ],
@@ -626,6 +640,12 @@ SERVER_TEMPLATE = {
         "enabled": True,
         "name_format": "\U0001F50A {user}'s channel",
         "default_limit": 0,           # 0 = unlimited
+    },
+
+    # Profile picture changes with a before/after image in CHANNELS["avatar_logs"].
+    "avatar_log": {
+        "enabled": True,
+        "server_avatars": True,       # also log server-specific profile pictures
     },
 
     # Welcome image with the member's avatar, posted in CHANNELS["welcome"].

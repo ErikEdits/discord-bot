@@ -194,6 +194,7 @@ else:
         "cogs.maintenance",
         "cogs.moderation",
         "cogs.logging_cog",
+        "cogs.avatar_log",
         "cogs.antispam",
         "cogs.linkfilter",
         "cogs.tickets",
