@@ -1,4 +1,30 @@
 ============================================================
+ BOT UPDATE 8 - Auto-Umfragen und Tipps einstellen
+============================================================
+
+/poll auto [enabled] [duration] [delay]      (nur Admin)
+  Die automatischen Release-Umfragen ("How is <Mod> <Version>
+  working for you?") nach einem neuen Mod-Release.
+  enabled   an / aus
+  duration  wie lange die Umfrage offen bleibt, z.B. 3d, 12h (max 30d)
+  delay     wie lange nach dem Release sie kommt, z.B. 3d, 6h
+  Ohne Angaben zeigt der Befehl die aktuellen Einstellungen und
+  welche Umfragen gerade warten. Ein neues delay gilt auch fuer
+  Umfragen, die schon warten. Aus = wartende Umfragen kommen nicht.
+  Standard: an, 3 Tage nach Release, 3 Tage offen.
+
+/tip settings [enabled] [every] [time]        (nur Admin)
+  Die "Did you know?"-Tipps.
+  enabled  an / aus
+  every    wie oft: 1d = jeden Tag, 2d, 7d ... oder z.B. 12h
+  time     Uhrzeit, z.B. 17:00 (bei 1d und mehr)
+  Ohne Angaben zeigt er die aktuellen Einstellungen.
+  Standard: an, jeden Tag um 17:00.
+
+Die Einstellungen bleiben nach Neustarts erhalten und sind im Backup.
+
+
+============================================================
  BOT UPDATE 7 - Profilbild-Aenderungen im Admin-Log
 ============================================================
 
