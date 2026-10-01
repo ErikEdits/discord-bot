@@ -642,6 +642,42 @@ SERVER_TEMPLATE = {
         "default_limit": 0,           # 0 = unlimited
     },
 
+    # Minecraft server logs (EntityLagFix plugin webhook). Channel: /mclog channel.
+    # Lines look like "BLOCK_PLACE | ColinTK | GRASS_BLOCK @ Location{world=...,x=..,y=..,z=..}".
+    "mc_logs": {
+        "retention_days": 4,
+        "max_db_mb": 100,               # hard size limit of data/mc_logs.db, oldest data goes first
+        "timezone": "Europe/Berlin",
+        # Never reported as suspicious. Teleports close to them are reported.
+        "trusted_players": ["ErikEdits", "ColinTK"],
+        # Get suspicious-activity DMs (Discord usernames), plus the server owner.
+        "alert_users": ["mini_paluten056"],
+        "alert_cooldown_seconds": 120,  # same player + same kind at most once in this time
+        "alerts_from_spectators_only": False,
+        "teleport_alert_radius": 64,    # blocks around a trusted player
+        "position_max_age_minutes": 10, # how old a trusted player's last known position may be
+        "mass_break_blocks": 300,       # blocks broken within mass_break_minutes
+        "mass_break_minutes": 5,
+        "ore_alert_count": 20,          # ores broken within ore_alert_minutes
+        "ore_alert_minutes": 10,
+        "ores": ["DIAMOND_ORE", "DEEPSLATE_DIAMOND_ORE", "ANCIENT_DEBRIS", "EMERALD_ORE",
+                 "DEEPSLATE_EMERALD_ORE", "GOLD_ORE", "DEEPSLATE_GOLD_ORE", "NETHER_GOLD_ORE"],
+        # Commands (first word) that are reported when someone untrusted runs them.
+        "suspicious_commands": ["op", "deop", "gamemode", "gm", "gmc", "gms", "gmsp", "gma", "give", "i", "item",
+                                "tp", "tphere", "tpo", "tpall", "teleport", "vanish", "v", "sv", "pv", "fly", "god",
+                                "kill", "ban", "ban-ip", "pardon", "kick", "whitelist", "lp", "luckperms", "pex",
+                                "perm", "perms", "sudo", "execute", "summon", "effect", "enchant", "xp",
+                                "experience", "setblock", "fill", "clone", "/set", "/wand", "stop", "reload",
+                                "rl", "plugman", "invsee", "openinv", "ec", "enderchest", "speed", "heal", "feed",
+                                "nick", "spectate"],
+        # Event types that are only counted (per 10 minutes and area), not stored one by one.
+        "count_only_types": ["ENTITY_SPAWN", "ITEM_SPAWN", "CREATURE_SPAWN", "SPAWNER_SPAWN", "CHUNK_LOAD",
+                             "CHUNK_UNLOAD", "ENTITY_DEATH", "ITEM_DESPAWN"],
+        # At most one stored event per player and this many seconds (movement spam).
+        "sample_seconds": {"PLAYER_MOVE": 30, "PLAYER_ROTATE": 60, "PLAYER_TOGGLE_SNEAK": 30,
+                           "PLAYER_TOGGLE_SPRINT": 30, "PLAYER_ANIMATION": 30, "PLAYER_VELOCITY": 30},
+    },
+
     # Profile picture changes with a before/after image in CHANNELS["avatar_logs"].
     "avatar_log": {
         "enabled": True,

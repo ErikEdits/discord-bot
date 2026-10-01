@@ -29,6 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from cogs.common import has_perm
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.modrinth")
@@ -550,7 +551,7 @@ class Modrinth(commands.Cog):
     @app_commands.command(name="modrinth-check", description="Force a Modrinth poll right now (admin only).")
     @app_commands.default_permissions(administrator=True)
     async def modrinth_check(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -586,7 +587,7 @@ class Modrinth(commands.Cog):
     @app_commands.autocomplete(project=_project_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def modrinth_release(self, interaction: discord.Interaction, project: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)

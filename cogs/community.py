@@ -24,7 +24,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import is_admin, load_json, mark_bot_delete, save_json
+from cogs.common import has_perm, is_admin, load_json, mark_bot_delete, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.community")
@@ -242,7 +242,7 @@ class Community(commands.Cog):
                            keywords="Optional, comma-separated: words that make the bot suggest this FAQ automatically")
     @app_commands.default_permissions(administrator=True)
     async def faq_add(self, interaction: discord.Interaction, name: str, answer: str, keywords: str | None = None):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         data = _load_faqs()
@@ -260,7 +260,7 @@ class Community(commands.Cog):
     @app_commands.autocomplete(name=_faq_key_autocomplete)
     @app_commands.default_permissions(administrator=True)
     async def faq_remove(self, interaction: discord.Interaction, name: str):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         data = _load_faqs()
@@ -330,7 +330,7 @@ class Community(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def announce(self, interaction: discord.Interaction, channel: discord.TextChannel,
                        title: str, message: str, ping_everyone: bool = False):
-        if not interaction.user.guild_permissions.administrator:
+        if not has_perm(interaction.user, "administrator"):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         embed = discord.Embed(

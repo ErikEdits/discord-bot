@@ -35,6 +35,7 @@ logging.basicConfig(
 log = logging.getLogger("setup-bot")
 
 from server_template import SERVER_TEMPLATE, CHANNELS
+from cogs.common import GrantAwareTree, has_perm
 from cogs.role_panel import ReactionRolesView, build_panel as build_role_panel, get_panel_config
 from web import log_buffer
 from web.app import app as panel_app, set_bot as set_panel_bot
@@ -101,7 +102,8 @@ intents.members = True  # Required for member join/leave/update events. Enable S
 # toggle in the Developer Portal too - if that toggle is OFF, the bot fails to
 # start; set MESSAGE_CONTENT_INTENT=false in .env to boot without it.
 intents.message_content = os.getenv("MESSAGE_CONTENT_INTENT", "true").lower() in ("1", "true", "yes")
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+# GrantAwareTree lets the server owner unlock single admin commands for members (/grant).
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None, tree_cls=GrantAwareTree)
 
 
 class RulesAcceptView(discord.ui.View):
@@ -161,6 +163,8 @@ if LOW_POWER:
         "cogs.bot_updates",
         "cogs.selftest",
         "cogs.panel_launcher",
+        "cogs.grants",
+        "cogs.mc_logs",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -190,6 +194,8 @@ else:
         "cogs.bot_updates",
         "cogs.selftest",
         "cogs.panel_launcher",
+        "cogs.grants",
+        "cogs.mc_logs",
         "cogs.settings",
         "cogs.maintenance",
         "cogs.moderation",
@@ -1201,7 +1207,7 @@ async def post_welcome_and_rules(guild, template, bot_user):
 )
 @app_commands.default_permissions(administrator=True)
 async def setup_cmd(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    if not has_perm(interaction.user, "administrator"):
         await interaction.response.send_message(
             "You need the Administrator permission to run this command.",
             ephemeral=True,
@@ -1275,7 +1281,7 @@ async def setup_cmd(interaction: discord.Interaction):
 )
 @app_commands.default_permissions(administrator=True)
 async def update_cmd(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    if not has_perm(interaction.user, "administrator"):
         await interaction.response.send_message(
             "You need the Administrator permission to run this command.",
             ephemeral=True,
@@ -1386,7 +1392,7 @@ def classify_roles_for_reset(guild: discord.Guild):
 )
 @app_commands.default_permissions(administrator=True)
 async def serverreset(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    if not has_perm(interaction.user, "administrator"):
         await interaction.response.send_message(
             "You need the Administrator permission to run this command.",
             ephemeral=True,
