@@ -39,8 +39,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.common import DATA_DIR, get_setting, is_admin, load_json, save_json, set_setting
-from cogs.mclog_core import (Detector, LogStore, fmt_event, fmt_pos, message_lines, parse_line, parse_question,
-                             parse_time_spec, player_summary, summary_text)
+from cogs.mclog_core import (Detector, LogStore, answer_question, fmt_event, fmt_pos, message_lines, parse_line,
+                             parse_question, parse_time_spec, player_summary, summary_text, understood_text)
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_logs")
@@ -344,57 +344,9 @@ class McLogs(commands.Cog):
 
     async def local_answer(self, q) -> tuple[str, list]:
         """Answer from the stored data without AI. Returns (text, events for the file)."""
-        store, tz = self.store, _tz()
-        span = (f"{datetime.fromtimestamp(q.start, tz):%d.%m. %H:%M} - "
-                f"{datetime.fromtimestamp(q.end, tz):%d.%m. %H:%M}")
-        flt = dict(start=q.start, end=q.end, types=q.types or None, obj_words=q.obj_words or None, near=q.near)
-        parts = [f"**Time:** {span}"]
-        events = []
-        if q.suspicious:
-            alerts = await self.db(store.alerts, q.start, q.end, q.players or None, 25)
-            parts.append("**Suspicious activity:**\n" + ("\n".join(
-                f"`{datetime.fromtimestamp(ts, tz):%d.%m. %H:%M}` {text}" for ts, _, _, text in alerts)
-                or "nothing reported"))
-        if q.players:
-            for p in q.players[:3]:
-                if q.types or q.obj_words or q.near:
-                    n = await self.db(store.count, players=[p], **flt)
-                    top = await self.db(store.grouped, "obj", 8, players=[p], **flt)
-                    found = await self.db(store.events, 15, True, players=[p], **flt)
-                    lines = [f"**{p}:** {n} matching event(s)"]
-                    if top and any(o != "-" for o, _ in top):
-                        lines.append(", ".join(f"{c}x {o}" for o, c in top if o != "-"))
-                    lines += [f"`{fmt_event(e, tz)}`" for e in found[:8]]
-                    parts.append("\n".join(lines))
-                    events += await self.db(store.events, 5000, False, players=[p], **flt)
-                else:
-                    s = await self.db(player_summary, store, p, q.start, q.end, tz)
-                    parts.append(f"**{p}**\n{summary_text(s, tz)}")
-                    events += await self.db(store.events, 5000, False, players=[p], start=q.start, end=q.end)
-        elif q.types or q.obj_words or q.near:
-            n = await self.db(store.count, **flt)
-            who = await self.db(store.grouped, "player", 10, **flt)
-            what = await self.db(store.grouped, "obj", 8, **flt)
-            parts.append(f"**{n} matching event(s)**")
-            if who:
-                parts.append("By player: " + ", ".join(f"{p} {c}" for p, c in who))
-            if what and any(o != "-" for o, _ in what):
-                parts.append("What: " + ", ".join(f"{c}x {o}" for o, c in what if o != "-"))
-            events = await self.db(store.events, 5000, False, **flt)
-        elif not q.suspicious:
-            who = await self.db(store.grouped, "player", 15, start=q.start, end=q.end)
-            parts.append("**Active players:** " + (", ".join(f"{p} ({c})" for p, c in who if p != "-")
-                                                    or "nobody"))
-            alerts = await self.db(store.alerts, q.start, q.end, None, 5)
-            if alerts:
-                parts.append("**Recent suspicious activity:**\n" + "\n".join(
-                    f"`{datetime.fromtimestamp(ts, tz):%d.%m. %H:%M}` {text}" for ts, _, _, text in alerts))
-        if q.spawns:
-            top = await self.db(store.counted, q.start, q.end, 8)
-            parts.append("**Spawns:** " + (", ".join(f"{o} {n}" for _, o, n in top) or "none counted"))
-        if not q.players and not self.players:
-            parts.append("_No player names known yet - the log store is still empty._")
-        return "\n\n".join(parts), events
+        text, flt = await self.db(answer_question, self.store, q, _tz())
+        events = await self.db(self.store.events, 5000, False, **flt) if flt else []
+        return text, events
 
     async def build_ai_context(self, q, question: str) -> str:
         store, tz = self.store, _tz()
@@ -477,13 +429,15 @@ class McLogs(commands.Cog):
             return None, "no free AI model reachable right now"
         messages = [
             {"role": "system", "content": (
-                "You analyse Minecraft server logs for the server admins. Answer the question only from the "
-                "log data below. Be concrete: name players, times (as given), coordinates and counts. If the "
-                "data doesn't answer the question, say so. Answer in the language of the question, short and "
-                "clear (max. 15 lines). Times are local server time.")},
+                "You analyse Minecraft server logs for the server admins. Answer only from the log data below. "
+                "Start with a direct one-sentence answer to the question, then explain it: per player, which "
+                "blocks/items, when (times as given) and where (coordinates), and anything unusual. Use short "
+                "Discord markdown (bold numbers, bullet points), max. 20 lines. If the data doesn't answer the "
+                "question, say what is missing. Answer in the language of the question. Times are local server "
+                "time. Mob names like ZOMBIE are not players.")},
             {"role": "user", "content": f"Log data:\n{context}\n\nQuestion: {question}"},
         ]
-        body = {"model": model, "messages": messages, "max_tokens": 900, "temperature": 0.2}
+        body = {"model": model, "messages": messages, "max_tokens": 1200, "temperature": 0.2}
         headers = {"Authorization": f"Bearer {key}", "HTTP-Referer": "https://github.com/ErikEdits/discord-bot",
                    "X-Title": "ErikEdits Bot"}
         try:
@@ -662,14 +616,15 @@ class McLogs(commands.Cog):
             answer, problem = await self.ai_answer(key, question, context)
             if answer is None:
                 note = f"AI not available ({problem}) - answered by the bot itself."
+        understood = understood_text(q, tz)
         if answer is not None:
             embed = discord.Embed(title="⛏️ " + question[:240], description=answer[:4000], color=0x9B59B6)
-            embed.set_footer(text=f"Free AI model: {await self.pick_model()} · checks the log data, can still be wrong")
+            embed.set_footer(text=f"{understood}\nFree AI model: {await self.pick_model()} · can still be wrong"[:2048])
             events = []
         else:
             text, events = await self.local_answer(q)
             embed = discord.Embed(title="⛏️ " + question[:240], description=text[:4000], color=0x2ECC71)
-            embed.set_footer(text=note or "Answered by the bot from the stored logs (free)")
+            embed.set_footer(text=f"{understood}\n{note or ('Vom Bot selbst ausgewertet (kostenlos)' if q.lang == 'de' else 'Answered by the bot itself (free)')}"[:2048])
         file = self._timeline_file(events, "events.txt")
         await interaction.followup.send(embed=embed, ephemeral=True, **({"file": file} if file else {}))
 
