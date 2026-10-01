@@ -10,7 +10,8 @@ Background jobs:
 - Download milestones (100, 1k, 10k, ...) announced in the stats channel.
   The first time a mod is seen, its current milestone is only recorded.
 - Release feedback: N days after a new release (announced by the Modrinth
-  watcher) a feedback poll is posted in the polls channel.
+  watcher) a feedback poll is posted in the polls channel. On/off, delay and
+  poll duration: /poll auto (stored in data/mod_info.json).
 
 Config: SERVER_TEMPLATE["mod_info"]. State: data/mod_info.json.
 """
@@ -105,14 +106,41 @@ def build_compat_embed(rows: list[tuple[dict, dict[str, set[str]]]]) -> discord.
     return embed
 
 
+def auto_poll_settings() -> dict:
+    """Release feedback polls: changed with /poll auto, defaults from SERVER_TEMPLATE["mod_info"]."""
+    cfg = _config()
+    saved = _load().get("auto_poll", {})
+    default_days = float(cfg.get("feedback_after_days", 3))
+    return {
+        "enabled": bool(saved.get("enabled", default_days > 0)),
+        "delay_hours": float(saved.get("delay_hours", max(default_days, 0) * 24)),
+        "duration_hours": float(saved.get("duration_hours", cfg.get("feedback_poll_hours", 72))),
+    }
+
+
+def save_auto_poll_settings(**changes) -> dict:
+    data = _load()
+    data.setdefault("auto_poll", {}).update(changes)
+    save_json(STATE_FILE, data)
+    return auto_poll_settings()
+
+
+def pending_feedback() -> list[dict]:
+    return _load()["feedback"]
+
+
+def _feedback_due(entry: dict, delay_hours: float) -> float:
+    # "released" lets a changed delay apply to polls that are already waiting.
+    if "released" in entry:
+        return entry["released"] + delay_hours * 3600
+    return entry["due"]
+
+
 def schedule_release_feedback(project: dict, version: dict) -> None:
     """Called by the Modrinth watcher when a new version was announced."""
     if _ACTIVE is not None:
         _ACTIVE.compat_dirty = True  # new version -> redraw the compatibility table
-    if version.get("version_type", "release") != "release":
-        return
-    days = float(_config().get("feedback_after_days", 3))
-    if days <= 0:
+    if version.get("version_type", "release") != "release" or not auto_poll_settings()["enabled"]:
         return
     data = _load()
     if any(f.get("version_id") == version.get("id") for f in data["feedback"]):
@@ -121,7 +149,7 @@ def schedule_release_feedback(project: dict, version: dict) -> None:
         "version_id": version.get("id"),
         "title": project.get("title", "?"),
         "version_number": version.get("version_number", ""),
-        "due": time.time() + days * 86400,
+        "released": time.time(),
     })
     save_json(STATE_FILE, data)
 
@@ -252,19 +280,22 @@ class ModInfo(commands.Cog):
 
     async def _post_due_feedback(self) -> None:
         data = _load()
+        settings = auto_poll_settings()
         now = time.time()
-        due = [f for f in data["feedback"] if f["due"] <= now]
+        due = [f for f in data["feedback"] if _feedback_due(f, settings["delay_hours"]) <= now]
         if not due:
             return
         poll_cog = self.bot.get_cog("Poll")
         for f in due:
-            if poll_cog is not None:
+            if not settings["enabled"]:
+                log.info("Release feedback poll for %s %s skipped (automatic polls are off)",
+                         f["title"], f["version_number"])
+            elif poll_cog is not None:
                 question = f"How is {f['title']} {f['version_number']} working for you?"
                 options = list(_config().get("feedback_options", ["Works great", "Small issues", "Crashes / broken"]))
                 for guild in self.bot.guilds:
                     try:
-                        await poll_cog.start_poll(guild, question[:250], options,
-                                                  float(_config().get("feedback_poll_hours", 72)), 0)
+                        await poll_cog.start_poll(guild, question[:250], options, settings["duration_hours"], 0)
                         log.info("Posted release feedback poll for %s %s", f["title"], f["version_number"])
                     except ValueError as e:
                         log.warning("Release feedback poll skipped in %s: %s", guild.name, e)

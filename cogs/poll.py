@@ -9,6 +9,9 @@ the bot owner.
 State is persisted to data/polls.json so polls survive restarts: on startup
 open polls are re-scheduled and any already-expired ones are tallied at once.
 
+/poll auto turns the automatic release feedback polls (cogs/mod_info.py) on or
+off and sets how long after a release they start and how long they stay open.
+
 Privacy: reaction polls are NOT anonymous (you can see who reacted). Only
 aggregate results are reported. For true anonymity use native Discord polls.
 """
@@ -26,6 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.common import format_duration, parse_duration
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.poll")
@@ -373,6 +377,57 @@ class Poll(commands.Cog):
                 value=f"{len(p['options'])} options · closes {closes}",
                 inline=False,
             )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @group.command(name="auto", description="Automatic release feedback polls: on/off, how long they run, when they start.")
+    @app_commands.describe(
+        enabled="Turn the automatic polls on or off",
+        duration="How long each poll stays open, e.g. 3d or 12h (max 30d)",
+        delay="How long after a new release the poll is posted, e.g. 3d or 6h",
+    )
+    async def auto(self, interaction: discord.Interaction, enabled: bool | None = None,
+                   duration: str | None = None, delay: str | None = None):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("Administrator only.", ephemeral=True)
+            return
+        from cogs.mod_info import auto_poll_settings, pending_feedback, save_auto_poll_settings
+        changes = {}
+        if enabled is not None:
+            changes["enabled"] = enabled
+        if duration is not None:
+            d = parse_duration(duration)
+            if d is None or not 60 <= d.total_seconds() <= 30 * 86400:
+                await interaction.response.send_message(
+                    "Duration must be between 1m and 30d, e.g. `3d`, `12h` or `1d12h`.", ephemeral=True)
+                return
+            changes["duration_hours"] = d.total_seconds() / 3600
+        if delay is not None:
+            d = parse_duration(delay)
+            if d is None or d.total_seconds() > 60 * 86400:
+                await interaction.response.send_message(
+                    "Delay must be at most 60d, e.g. `3d`, `6h` or `30m`.", ephemeral=True)
+                return
+            changes["delay_hours"] = d.total_seconds() / 3600
+        settings = save_auto_poll_settings(**changes) if changes else auto_poll_settings()
+        if changes:
+            log.info("Automatic polls changed by %s: %s", interaction.user, changes)
+        embed = discord.Embed(
+            title="\U0001F5F3️ Automatic release polls",
+            description="After a new mod release the bot asks in the polls channel how it's going.",
+            color=0x57F287 if settings["enabled"] else 0x95A5A6,
+        )
+        embed.add_field(name="Status", value="✅ on" if settings["enabled"] else "⛔ off", inline=True)
+        embed.add_field(name="Posted after release",
+                        value=format_duration(timedelta(hours=settings["delay_hours"])), inline=True)
+        embed.add_field(name="Poll stays open",
+                        value=format_duration(timedelta(hours=settings["duration_hours"])), inline=True)
+        waiting = pending_feedback()
+        if waiting:
+            embed.add_field(name="Waiting",
+                            value="\n".join(f"{w['title']} {w['version_number']}" for w in waiting[:10]),
+                            inline=False)
+        embed.set_footer(text="Change: /poll auto enabled:… duration:3d delay:3d"
+                         if not changes else "Saved ✓ - applies to waiting polls too")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
