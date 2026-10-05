@@ -44,6 +44,15 @@ USER_AGENT = "ErikEdits-Discord-Bot (github.com/ErikEdits/discord-bot)"
 RELEASE_TYPES = {1: "Release", 2: "Beta", 3: "Alpha"}
 LOADERS = {"fabric", "forge", "neoforge", "quilt", "liteloader", "rift"}
 MAX_ANNOUNCE_PER_CHECK = 5
+# Upload tokens from curseforge.com -> Settings -> My API Tokens look like a UUID. They
+# can upload files but can't read data; the bot needs a key from console.curseforge.com.
+UPLOAD_TOKEN_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+WRONG_KEY_TEXT = (
+    "That looks like an **upload token** (curseforge.com → Settings → My API Tokens) - nothing saved. "
+    "It can only upload files, so keep it private.\n"
+    "The bot needs an **API key** from **console.curseforge.com**: sign in there, create an organization if "
+    "asked, open **API Keys** and copy the key. It starts with `$2a$10$`."
+)
 
 
 def _config() -> dict:
@@ -144,8 +153,8 @@ def release_embed(mod: dict, file: dict) -> discord.Embed:
 
 
 class KeyModal(discord.ui.Modal, title="CurseForge API key"):
-    key = discord.ui.TextInput(label="API key (empty = remove)", required=False, max_length=200,
-                               placeholder="from console.curseforge.com -> API keys")
+    key = discord.ui.TextInput(label="API key from console.curseforge.com", required=False, max_length=200,
+                               placeholder="$2a$10$... (empty = remove)")
 
     def __init__(self, cog):
         super().__init__()
@@ -157,10 +166,15 @@ class KeyModal(discord.ui.Modal, title="CurseForge API key"):
             set_setting(KEY_SETTING, None)
             await interaction.response.send_message("CurseForge key removed.", ephemeral=True)
             return
+        if UPLOAD_TOKEN_RE.match(value):
+            await interaction.response.send_message(WRONG_KEY_TEXT, ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         status, _ = await self.cog.request("GET", f"/games/{MINECRAFT}", key=value)
         if status in (401, 403):
-            await interaction.followup.send("CurseForge says this key is invalid - nothing saved.", ephemeral=True)
+            hint = "" if value.startswith("$2a$") else "\n\n" + WRONG_KEY_TEXT
+            await interaction.followup.send("CurseForge says this key is invalid - nothing saved." + hint,
+                                            ephemeral=True)
             return
         set_setting(KEY_SETTING, value)
         log.info("CurseForge key set by %s", interaction.user)
