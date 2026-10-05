@@ -2,7 +2,8 @@
 
     /curseforge key      set or remove the CurseForge API key (administrator, modal)
     /curseforge status   which mods were found on CurseForge, downloads, last check
-    /curseforge sync     check CurseForge now
+    /curseforge add      link a mod by its CurseForge link or project ID (if it isn't found)
+    /curseforge sync     check CurseForge now (shows what the search found)
 
 The bot finds the mods by itself: for every Modrinth project it searches CurseForge
 for the same slug / name by the same author (SERVER_TEMPLATE["curseforge"]["author"],
@@ -42,6 +43,8 @@ KEY_SETTING = "curseforge_api_key"
 STATE_FILE = DATA_DIR / "curseforge.json"
 USER_AGENT = "ErikEdits-Discord-Bot (github.com/ErikEdits/discord-bot)"
 RELEASE_TYPES = {1: "Release", 2: "Beta", 3: "Alpha"}
+PROJECT_STATUS = {1: "New", 2: "Changes required", 3: "Under soft review", 4: "Approved", 5: "Rejected",
+                  6: "Changes made", 7: "Inactive", 8: "Abandoned", 9: "Deleted", 10: "Under review"}
 LOADERS = {"fabric", "forge", "neoforge", "quilt", "liteloader", "rift"}
 MAX_ANNOUNCE_PER_CHECK = 5
 # Upload tokens from curseforge.com -> Settings -> My API Tokens look like a UUID. They
@@ -206,6 +209,7 @@ class CurseForge(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.lock = asyncio.Lock()
+        self.search_errors: list[str] = []
         self.sync_loop.change_interval(minutes=max(10, int(_config().get("poll_minutes", 30))))
         self.sync_loop.start()
 
@@ -266,6 +270,11 @@ class CurseForge(commands.Cog):
             status, data = await self.request("GET", "/mods/search",
                                               params={"gameId": MINECRAFT, "pageSize": 50, "index": index, **params})
             if status != 200 or not data:
+                if status != 200:
+                    shown = ", ".join(f"{k}={v}" for k, v in params.items())
+                    self.search_errors.append(f"search ({shown}) answered " +
+                                              ("no connection" if status == -1 else f"HTTP {status}"))
+                    log.warning("CurseForge search %s -> %s", params, status)
                 break
             page = data.get("data") or []
             out += page
@@ -283,42 +292,69 @@ class CurseForge(commands.Cog):
             return True
         return any((a.get("name") or "").lower() == _author() for a in authors)
 
-    async def discover(self, state: dict, projects: list[dict]) -> None:
-        """Find the author's mods on CurseForge and link them to the Modrinth projects."""
+    async def discover(self, state: dict, projects: list[dict]) -> list[str]:
+        """Find the author's mods on CurseForge and link them to the Modrinth projects.
+        Returns a short report of what the search saw (for /curseforge sync)."""
+        report: list[str] = []
+        self.search_errors = []
         found: dict[int, dict] = {}
+        if not projects:
+            report.append("Couldn't load the Modrinth projects right now - only the author search was used.")
         if state["author_id"]:
             for m in await self.search(authorId=state["author_id"]):
                 if self._by_author(m, state["author_id"]):
                     found[m["id"]] = m
         if not found:
             for p in projects:
-                hits = await self.search(slug=p.get("slug")) if p.get("slug") else []
-                hits = [h for h in hits if self._by_author(h, state["author_id"])]
-                if not hits:
-                    hits = [h for h in await self.search(searchFilter=p.get("title", ""), classId=6)
-                            if _norm(h.get("name")) == _norm(p.get("title")) and self._by_author(h, state["author_id"])]
-                for h in hits[:1]:
+                title, slug = p.get("title", ""), p.get("slug")
+                seen: dict[int, dict] = {}
+                for params in ({"slug": slug, "classId": 6}, {"slug": slug},
+                               {"searchFilter": title, "classId": 6}, {"searchFilter": title}):
+                    if params.get("slug", "x") is None:
+                        continue
+                    for h in await self.search(**params):
+                        if h.get("slug") == slug or _norm(h.get("name")) == _norm(title):
+                            seen.setdefault(h["id"], h)
+                hits = [h for h in seen.values() if self._by_author(h, state["author_id"])]
+                if hits:
+                    h = hits[0]
                     found[h["id"]] = h
                     if not state["author_id"]:
                         author = next((a for a in h.get("authors") or [] if (a.get("name") or "").lower() == _author()),
                                       None)
                         state["author_id"] = author.get("id") if author else None
+                elif seen:
+                    authors = ", ".join(sorted({a.get("name", "?") for h in seen.values() for a in h.get("authors") or []}))
+                    report.append(f"**{title}**: found on CurseForge, but by **{authors}** (expected author "
+                                  f"`{_author()}`) - set `author` in server_template.py or use `/curseforge add`.")
+                else:
+                    report.append(f"**{title}**: the CurseForge search found nothing with this name or slug "
+                                  f"(`{slug}`). Link it by hand: `/curseforge add` with the page link or Project ID.")
             if state["author_id"]:  # now that we know the author, also pick up CurseForge-only mods
                 for m in await self.search(authorId=state["author_id"]):
                     if self._by_author(m, state["author_id"]):
                         found.setdefault(m["id"], m)
+        for m in found.values():
+            self._link(state, m, projects)
+        state["last_discovery"] = time.time()
+        if self.search_errors:
+            errors = list(dict.fromkeys(self.search_errors))
+            report.insert(0, "⚠️ CurseForge errors: " + "; ".join(errors[:4]))
+        return report
+
+    def _link(self, state: dict, m: dict, projects: list[dict]) -> dict:
         by_slug = {_norm(p.get("slug")): p for p in projects}
         by_name = {_norm(p.get("title")): p for p in projects}
-        for cf_id, m in found.items():
-            match = by_slug.get(_norm(m.get("slug"))) or by_name.get(_norm(m.get("name")))
-            entry = state["mods"].setdefault(str(cf_id), {})
-            new = "seen_files" not in entry
-            self._update_entry(entry, m)
-            entry["modrinth_id"] = match.get("id") if match else None
-            if new:
-                entry["seen_files"] = [f["id"] for f in m.get("latestFiles") or []]  # no announcements for old files
-                log.info("CurseForge: found %s%s", m.get("name"), f" (= Modrinth {match.get('title')})" if match else "")
-        state["last_discovery"] = time.time()
+        match = by_slug.get(_norm(m.get("slug"))) or by_name.get(_norm(m.get("name")))
+        entry = state["mods"].setdefault(str(m["id"]), {})
+        new = "seen_files" not in entry
+        self._update_entry(entry, m)
+        if match or new:
+            entry["modrinth_id"] = match.get("id") if match else entry.get("modrinth_id")
+        if new:
+            entry["seen_files"] = [f["id"] for f in m.get("latestFiles") or []]  # no announcements for old files
+            log.info("CurseForge: found %s%s", m.get("name"), f" (= Modrinth {match.get('title')})" if match else "")
+        return entry
 
     @staticmethod
     def _update_entry(entry: dict, m: dict) -> None:
@@ -365,8 +401,9 @@ class CurseForge(commands.Cog):
             from cogs.modrinth import _fetch_user_projects
             projects = await _fetch_user_projects(username) if username else []
             hours = float(_config().get("discover_hours", 24))
+            report = []
             if force_discovery or not state["mods"] or time.time() - (state["last_discovery"] or 0) > hours * 3600:
-                await self.discover(state, projects or [])
+                report = await self.discover(state, projects or [])
             new_files = await self.refresh(state)
             grace = float(_config().get("release_grace_minutes", 45)) * 60
             now = time.time()
@@ -378,8 +415,12 @@ class CurseForge(commands.Cog):
             save_json(STATE_FILE, state)
         announced = await self._announce_due(due, state)
         total = sum(int(m.get("downloads", 0)) for m in state["mods"].values())
-        return (f"{len(state['mods'])} mod(s) on CurseForge, {total:,} downloads"
+        names = ", ".join(m.get("name", "?") for m in state["mods"].values())
+        text = (f"{len(state['mods'])} mod(s) on CurseForge{f' ({names})' if names else ''}, {total:,} downloads"
                 + (f", {announced} new version(s) announced" if announced else "") + ".")
+        if report and force_discovery:
+            text += "\n\n" + "\n".join(report[:10])
+        return text[:1900]
 
     async def _announce_due(self, due: list[dict], state: dict) -> int:
         to_post = []
@@ -461,6 +502,54 @@ class CurseForge(commands.Cog):
                 f"{state['mods'].get(p['mod'], {}).get('name')} {p['file'].get('displayName')}"
                 for p in state["pending"])[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @group.command(name="add", description="Link a mod by its CurseForge page link or project ID.")
+    @app_commands.describe(project="e.g. https://www.curseforge.com/minecraft/mc-mods/justquests or the Project ID")
+    async def add(self, interaction: discord.Interaction, project: str):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("Administrator only.", ephemeral=True)
+            return
+        if not get_setting(KEY_SETTING):
+            await interaction.response.send_message("Set the CurseForge key first: `/curseforge key`.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        project = project.strip().rstrip("/")
+        mod = None
+        self.search_errors, status = [], 200
+        if project.isdigit():
+            status, data = await self.request("GET", f"/mods/{project}")
+            mod = (data or {}).get("data") if status == 200 else None
+        else:
+            slug = project.split("/mc-mods/")[-1].split("/")[0].split("?")[0] if "/" in project else project
+            hits = [h for h in await self.search(slug=slug, classId=6) + await self.search(slug=slug)
+                    if h.get("slug") == slug]
+            mod = hits[0] if hits else None
+        if mod is None:
+            errors = "; ".join(dict.fromkeys(self.search_errors)) if not project.isdigit() else f"HTTP {status}"
+            await interaction.followup.send(
+                "CurseForge didn't return this project"
+                + (f" ({errors})" if errors else "") + ". Try the **Project ID** (on the CurseForge project page "
+                "on the right under *About Project*), e.g. `/curseforge add project:123456`.", ephemeral=True)
+            return
+        status_note = ""
+        if mod.get("status") not in (None, 4) or mod.get("isAvailable") is False:
+            status_note = (f"\n⚠️ CurseForge status: **{PROJECT_STATUS.get(mod.get('status'), mod.get('status'))}** - "
+                           "downloads and files only show up once it's approved.")
+        from cogs.modrinth import _fetch_user_projects
+        username = SERVER_TEMPLATE.get("modrinth", {}).get("username", "")
+        projects = (await _fetch_user_projects(username) or []) if username else []
+        async with self.lock:
+            state = load_state()
+            entry = self._link(state, mod, projects)
+            author = next((a for a in mod.get("authors") or [] if (a.get("name") or "").lower() == _author()), None)
+            if author and not state["author_id"]:
+                state["author_id"] = author.get("id")
+            save_json(STATE_FILE, state)
+        linked = "linked to the Modrinth project" if entry.get("modrinth_id") else "not on Modrinth (CurseForge only)"
+        log.info("CurseForge: %s added by %s", mod.get("name"), interaction.user)
+        await interaction.followup.send(
+            f"✅ **{mod.get('name')}** added ({linked}), {int(mod.get('downloadCount') or 0):,} downloads.{status_note}",
+            ephemeral=True)
 
     @group.command(name="sync", description="Check CurseForge now (also looks for new mods).")
     async def sync_command(self, interaction: discord.Interaction):
