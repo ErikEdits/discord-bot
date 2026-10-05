@@ -1,6 +1,11 @@
-"""CurseForge: downloads and new versions of the mods (needs a free API key).
+"""CurseForge: downloads and new versions of the mods.
 
-    /curseforge key      set or remove the CurseForge API key (administrator, modal)
+Works without any key through CFWidget (api.cfwidget.com, a public service that
+serves CurseForge project data). With an official CurseForge API key (optional,
+/curseforge key) the bot uses the CurseForge API instead, which can also find mods
+that only exist on CurseForge by author.
+
+    /curseforge key      set or remove the optional CurseForge API key (administrator, modal)
     /curseforge status   which mods were found on CurseForge, downloads, last check
     /curseforge add      link a mod by its CurseForge link or project ID (if it isn't found)
     /curseforge sync     check CurseForge now (shows what the search found)
@@ -38,6 +43,8 @@ from server_template import CHANNELS, SERVER_TEMPLATE
 log = logging.getLogger("setup-bot.curseforge")
 
 API = "https://api.curseforge.com/v1"
+WIDGET = "https://api.cfwidget.com"
+WIDGET_TYPES = {"release": 1, "beta": 2, "alpha": 3}
 MINECRAFT = 432
 KEY_SETTING = "curseforge_api_key"
 STATE_FILE = DATA_DIR / "curseforge.json"
@@ -155,6 +162,24 @@ def release_embed(mod: dict, file: dict) -> discord.Embed:
     return embed
 
 
+def from_widget(d: dict) -> dict | None:
+    """A CFWidget project in the same shape as the CurseForge API's mod objects."""
+    if not isinstance(d, dict) or not d.get("id"):
+        return None
+    url = ((d.get("urls") or {}).get("curseforge") or "").rstrip("/")
+    files = [{
+        "id": f.get("id"), "displayName": f.get("display") or f.get("name"), "fileName": f.get("name"),
+        "releaseType": WIDGET_TYPES.get(str(f.get("type", "release")).lower(), 1),
+        "gameVersions": f.get("versions") or [], "fileDate": f.get("uploaded_at"),
+    } for f in d.get("files") or [] if f.get("id")]
+    return {
+        "id": int(d["id"]), "name": d.get("title"), "slug": url.split("/")[-1] if url else None,
+        "downloadCount": int((d.get("downloads") or {}).get("total") or 0),
+        "authors": [{"id": m.get("id"), "name": m.get("username") or m.get("title")} for m in d.get("members") or []],
+        "links": {"websiteUrl": url or None}, "logo": {"thumbnailUrl": d.get("thumbnail")}, "latestFiles": files,
+    }
+
+
 class KeyModal(discord.ui.Modal, title="CurseForge API key"):
     key = discord.ui.TextInput(label="API key from console.curseforge.com", required=False, max_length=200,
                                placeholder="$2a$10$... (empty = remove)")
@@ -190,6 +215,7 @@ class KeyModal(discord.ui.Modal, title="CurseForge API key"):
             await interaction.followup.send(text, ephemeral=True)
             return
         set_setting(KEY_SETTING, value)
+        self.cog.api_refused = 0.0
         log.info("CurseForge key set by %s", interaction.user)
         result = await self.cog.sync(force_discovery=True)
         note = "" if status == 200 else f"\n(Couldn't check the key right now: {detail.get('message') or status})"
@@ -210,6 +236,7 @@ class CurseForge(commands.Cog):
         self.bot = bot
         self.lock = asyncio.Lock()
         self.search_errors: list[str] = []
+        self.api_refused = 0.0          # when CurseForge last refused the key (-> CFWidget meanwhile)
         self.sync_loop.change_interval(minutes=max(10, int(_config().get("poll_minutes", 30))))
         self.sync_loop.start()
 
@@ -231,6 +258,11 @@ class CurseForge(commands.Cog):
                                          timeout=aiohttp.ClientTimeout(total=20)) as r:
                         if r.status == 200:
                             return 200, await r.json(content_type=None)
+                        if r.status in (401, 403) and key == get_setting(KEY_SETTING):
+                            if time.time() - self.api_refused > 6 * 3600:
+                                log.warning("CurseForge refuses the saved key (HTTP %s) - using CFWidget instead",
+                                            r.status)
+                            self.api_refused = time.time()
                         if r.status != 429 and r.status < 500:
                             return r.status, None
                         problem = f"HTTP {r.status}"
@@ -263,6 +295,35 @@ class CurseForge(commands.Cog):
                     return r.status, {"blocked": blocked, "message": message}
         except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
             return -1, {"blocked": False, "message": f"not reachable ({type(exc).__name__})"}
+
+    def use_api(self) -> bool:
+        """The official API only with a key that CurseForge didn't refuse in the last 6 hours."""
+        return bool(get_setting(KEY_SETTING)) and time.time() - self.api_refused > 6 * 3600
+
+    async def widget_mod(self, slug: str | None = None, cf_id: int | str | None = None) -> tuple[dict | None, str]:
+        """(mod in CurseForge API shape, problem text). CFWidget answers 202 while it loads a project
+        for the first time - then it's asked once more a few seconds later."""
+        path = f"/{cf_id}" if cf_id else f"/minecraft/mc-mods/{slug}"
+        problem = ""
+        for attempt in (1, 2, 3):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(WIDGET + path, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                                     timeout=aiohttp.ClientTimeout(total=20)) as r:
+                        if r.status == 200:
+                            mod = from_widget(await r.json(content_type=None))
+                            return mod, "" if mod else "CFWidget sent no project data"
+                        if r.status == 404:
+                            return None, "not found on CurseForge"
+                        problem = "CFWidget is loading it (try again in a minute)" if r.status == 202 else f"CFWidget HTTP {r.status}"
+                        if r.status not in (202, 429) and r.status < 500:
+                            break
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                problem = f"CFWidget not reachable ({type(exc).__name__})"
+            if attempt < 3:
+                await asyncio.sleep(4)
+        log.warning("CurseForge via CFWidget %s: %s", path, problem)
+        return None, problem
 
     async def search(self, **params) -> list[dict]:
         out, index = [], 0
@@ -298,6 +359,22 @@ class CurseForge(commands.Cog):
         report: list[str] = []
         self.search_errors = []
         found: dict[int, dict] = {}
+        if not self.use_api():
+            for p in projects:
+                title = p.get("title", "")
+                mod, problem = await self.widget_mod(slug=p.get("slug"))
+                if mod and self._by_author(mod, state["author_id"]):
+                    found[mod["id"]] = mod
+                elif mod:
+                    authors = ", ".join(a.get("name") or "?" for a in mod.get("authors") or [])
+                    report.append(f"**{title}**: `{p.get('slug')}` on CurseForge belongs to **{authors}**, not "
+                                  f"`{_author()}` - use `/curseforge add` with your project's link.")
+                elif problem != "not found on CurseForge":
+                    report.append(f"**{title}**: {problem}.")
+            for m in found.values():
+                self._link(state, m, projects)
+            state["last_discovery"] = time.time()
+            return report
         if not projects:
             report.append("Couldn't load the Modrinth projects right now - only the author search was used.")
         if state["author_id"]:
@@ -370,11 +447,15 @@ class CurseForge(commands.Cog):
         ids = [int(i) for i in state["mods"]]
         if not ids:
             return []
-        status, data = await self.request("POST", "/mods", json_body={"modIds": ids, "filterPcOnly": True})
-        if status != 200 or not data:
-            return []
+        if self.use_api():
+            status, data = await self.request("POST", "/mods", json_body={"modIds": ids, "filterPcOnly": True})
+            if status != 200 or not data:
+                return []
+            mods = data.get("data") or []
+        else:
+            mods = [m for m in [(await self.widget_mod(cf_id=i))[0] for i in ids] if m]
         new_files = []
-        for m in data.get("data") or []:
+        for m in mods:
             entry = state["mods"].get(str(m.get("id")))
             if entry is None:
                 continue
@@ -393,8 +474,8 @@ class CurseForge(commands.Cog):
             return await _fetch(session, f"{API_BASE}/project/{project_id}/version") or []
 
     async def sync(self, force_discovery: bool = False) -> str:
-        if not get_setting(KEY_SETTING):
-            return "No CurseForge key set (`/curseforge key`)."
+        if self.use_api() and (await self.request("GET", f"/games/{MINECRAFT}"))[0] in (401, 403):
+            pass  # key refused -> request() switched to CFWidget for the next hours
         async with self.lock:
             state = load_state()
             username = SERVER_TEMPLATE.get("modrinth", {}).get("username", "")
@@ -418,6 +499,9 @@ class CurseForge(commands.Cog):
         names = ", ".join(m.get("name", "?") for m in state["mods"].values())
         text = (f"{len(state['mods'])} mod(s) on CurseForge{f' ({names})' if names else ''}, {total:,} downloads"
                 + (f", {announced} new version(s) announced" if announced else "") + ".")
+        if get_setting(KEY_SETTING) and not self.use_api():
+            report.insert(0, "ℹ️ CurseForge refuses the saved API key - using CFWidget (no key needed) instead. "
+                             "Remove the key with `/curseforge key` (leave it empty).")
         if report and force_discovery:
             text += "\n\n" + "\n".join(report[:10])
         return text[:1900]
@@ -459,7 +543,7 @@ class CurseForge(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def sync_loop(self):
-        if not _config().get("enabled", True) or not get_setting(KEY_SETTING):
+        if not _config().get("enabled", True):
             return
         try:
             await self.sync()
@@ -486,9 +570,11 @@ class CurseForge(commands.Cog):
             return
         state = load_state()
         embed = discord.Embed(title="CurseForge", color=0xF16436)
-        if not get_setting(KEY_SETTING):
-            embed.description = ("No API key yet. Get one for free at **console.curseforge.com** (API keys) and "
-                                 "enter it with `/curseforge key`.")
+        embed.description = ("Source: **CurseForge API** (your key)" if self.use_api() else
+                             "Source: **CFWidget** - no key needed. Mods with a different name/slug than on "
+                             "Modrinth: `/curseforge add`."
+                             + ("\nℹ️ CurseForge refuses the saved API key - remove it with `/curseforge key` "
+                                "(leave it empty)." if get_setting(KEY_SETTING) else ""))
         lines = []
         for m in sorted(state["mods"].values(), key=lambda m: -int(m.get("downloads", 0))):
             link = "linked to Modrinth" if m.get("modrinth_id") else "only on CurseForge"
@@ -509,18 +595,22 @@ class CurseForge(commands.Cog):
         if not is_admin(interaction.user):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
-        if not get_setting(KEY_SETTING):
-            await interaction.response.send_message("Set the CurseForge key first: `/curseforge key`.", ephemeral=True)
-            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         project = project.strip().rstrip("/")
         mod = None
         self.search_errors, status = [], 200
-        if project.isdigit():
+        slug = project.split("/mc-mods/")[-1].split("/")[0].split("?")[0] if "/" in project else project
+        if not self.use_api():
+            mod, problem = await self.widget_mod(cf_id=project) if project.isdigit() else await self.widget_mod(slug=slug)
+            if mod is None:
+                await interaction.followup.send(f"Couldn't load this project: {problem}. Check the link, or try the "
+                                                "**Project ID** (CurseForge project page, right side, *About Project*).",
+                                                ephemeral=True)
+                return
+        elif project.isdigit():
             status, data = await self.request("GET", f"/mods/{project}")
             mod = (data or {}).get("data") if status == 200 else None
         else:
-            slug = project.split("/mc-mods/")[-1].split("/")[0].split("?")[0] if "/" in project else project
             hits = [h for h in await self.search(slug=slug, classId=6) + await self.search(slug=slug)
                     if h.get("slug") == slug]
             mod = hits[0] if hits else None
