@@ -207,6 +207,7 @@ else:
         "cogs.crash_analyzer",
         "cogs.modrinth",
         "cogs.mod_stats",
+        "cogs.curseforge",
         "cogs.welcome_dm",
         "cogs.utility",
         "cogs.backup",

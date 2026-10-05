@@ -1,4 +1,4 @@
-"""Download statistics for the Modrinth projects.
+"""Download statistics for the Modrinth projects (+ CurseForge, see cogs/curseforge.py).
 
 Posts an embed with downloads + followers per project (and the change since the
 last post) to CHANNELS["mod_stats"] - weekly or daily, see
@@ -48,17 +48,35 @@ def _delta(now: int, before: int | None) -> str:
 
 
 async def _fetch_projects() -> list[dict] | None:
+    """Modrinth projects, with CurseForge downloads added (cogs/curseforge.py) when a key is set."""
     username = SERVER_TEMPLATE.get("modrinth", {}).get("username")
     if not username:
         return None
     from cogs.modrinth import _fetch_user_projects
-    return await _fetch_user_projects(username)
+    projects = await _fetch_user_projects(username)
+    if projects is None:
+        return None
+    from cogs.curseforge import extend_projects
+    return extend_projects(projects)
+
+
+def _dl(p: dict) -> int:
+    return int(p.get("downloads", 0)) + int(p.get("cf_downloads", 0))
+
+
+def _prev_dl(before: dict, now: dict) -> int:
+    # Snapshots from before CurseForge was added have no "cf_downloads": don't count the jump as growth.
+    return int(before.get("downloads", 0)) + int(before.get("cf_downloads", now.get("cf_downloads", 0)))
 
 
 def build_stats_embed(projects: list[dict], previous: dict, period: str) -> discord.Embed:
-    projects = sorted(projects, key=lambda p: p.get("downloads", 0), reverse=True)
-    total = sum(p.get("downloads", 0) for p in projects)
-    prev_total = sum(v.get("downloads", 0) for v in previous.values()) if previous else None
+    projects = sorted(projects, key=_dl, reverse=True)
+    total = sum(_dl(p) for p in projects)
+    legacy = bool(previous) and not any("cf_downloads" in v for v in previous.values())
+    # A CurseForge-only mod in the first post after adding CurseForge isn't growth.
+    prev_total = sum(_prev_dl(previous[p["id"]], p) if p.get("id") in previous
+                     else (_dl(p) if legacy and p.get("cf_only") else 0) for p in projects) if previous else None
+    cf_total = sum(int(p.get("cf_downloads", 0)) for p in projects)
     followers = sum(p.get("followers", 0) for p in projects)
     prev_followers = sum(v.get("followers", 0) for v in previous.values()) if previous else None
 
@@ -68,6 +86,7 @@ def build_stats_embed(projects: list[dict], previous: dict, period: str) -> disc
         url=f"https://modrinth.com/user/{username}" if username else None,
         description=(
             f"**Total downloads:** {total:,}{_delta(total, prev_total)}\n"
+            + (f"Modrinth {total - cf_total:,} · CurseForge {cf_total:,}\n" if cf_total else "") +
             f"**Total followers:** {followers:,}{_delta(followers, prev_followers)}"
             + (f"\n*Numbers in brackets = change {period}.*" if previous else "")
         ),
@@ -76,27 +95,34 @@ def build_stats_embed(projects: list[dict], previous: dict, period: str) -> disc
     )
     for p in projects[:20]:
         before = previous.get(p.get("id"), {}) if previous else {}
-        dl = p.get("downloads", 0)
+        dl = _dl(p)
         fol = p.get("followers", 0)
-        dl_prev = before.get("downloads") if previous else None
+        dl_prev = _prev_dl(before, p) if previous and before else None
         fol_prev = before.get("followers") if previous else None
         if previous and not before:
-            dl_prev, fol_prev = 0, 0  # project is new since the last post
+            dl_prev, fol_prev = (dl, fol) if legacy and p.get("cf_only") else (0, 0)  # new since the last post
+        split = ""
+        if p.get("cf_only"):
+            split = " (CurseForge)"
+        elif p.get("cf_downloads"):
+            split = f" (Modrinth {int(p.get('downloads', 0)):,} · CurseForge {int(p['cf_downloads']):,})"
         embed.add_field(
             name=str(p.get("title", "Unknown"))[:256],
-            value=f"⬇️ **{dl:,}**{_delta(dl, dl_prev)} · ❤️ {fol:,}{_delta(fol, fol_prev)}",
+            value=f"⬇️ **{dl:,}**{_delta(dl, dl_prev)}{split}"
+                  + ("" if p.get("cf_only") else f" · ❤️ {fol:,}{_delta(fol, fol_prev)}"),
             inline=False,
         )
     if len(projects) > 20:
         embed.set_footer(text=f"+{len(projects) - 20} more projects")
     else:
-        embed.set_footer(text="Modrinth")
+        embed.set_footer(text="Modrinth + CurseForge" if cf_total else "Modrinth")
     return embed
 
 
 def _snapshot(projects: list[dict]) -> dict:
     return {
-        p["id"]: {"downloads": p.get("downloads", 0), "followers": p.get("followers", 0), "title": p.get("title")}
+        p["id"]: {"downloads": p.get("downloads", 0), "cf_downloads": int(p.get("cf_downloads", 0)),
+                  "followers": p.get("followers", 0), "title": p.get("title")}
         for p in projects if p.get("id")
     }
 

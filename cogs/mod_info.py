@@ -245,8 +245,9 @@ class ModInfo(commands.Cog):
             return
         data = _load()
         reached = []
-        for p in projects:
-            pid, downloads = p.get("id"), int(p.get("downloads", 0))
+        from cogs.curseforge import extend_projects, total_downloads
+        for p in extend_projects(projects):  # Modrinth + CurseForge downloads together
+            pid, downloads = p.get("id"), total_downloads(p)
             best = max((m for m in steps if downloads >= m), default=0)
             known = data["milestones"].get(pid)
             if known is None:
@@ -260,9 +261,12 @@ class ModInfo(commands.Cog):
 
     async def _announce_milestone(self, project: dict, milestone: int) -> None:
         url = f"https://modrinth.com/{project.get('project_type', 'mod')}/{project.get('slug')}"
+        links = [] if project.get("cf_only") else [f"[Modrinth]({url})"]
+        if project.get("cf_url"):
+            links.append(f"[CurseForge]({project['cf_url']})")
         embed = discord.Embed(
             title=f"\U0001F389 {project.get('title')} reached {milestone:,} downloads!",
-            description=f"Thank you all for downloading and playing! ❤️\n[View on Modrinth]({url})",
+            description=f"Thank you all for downloading and playing! ❤️\n{' · '.join(links)}",
             color=0xF1C40F,
             timestamp=datetime.now(timezone.utc),
         )
@@ -335,7 +339,14 @@ class ModInfo(commands.Cog):
         )
         if project.get("icon_url"):
             embed.set_thumbnail(url=project["icon_url"])
-        embed.add_field(name="Downloads", value=f"{project.get('downloads', 0):,}", inline=True)
+        from cogs.curseforge import cf_for_modrinth
+        cf = cf_for_modrinth(project.get("id"))
+        if cf:
+            mr, cfd = int(project.get("downloads", 0)), int(cf.get("downloads", 0))
+            embed.add_field(name="Downloads", value=f"{mr + cfd:,}\n-# Modrinth {mr:,} · CurseForge {cfd:,}",
+                            inline=True)
+        else:
+            embed.add_field(name="Downloads", value=f"{project.get('downloads', 0):,}", inline=True)
         embed.add_field(name="Followers", value=f"{project.get('followers', 0):,}", inline=True)
         if versions:
             latest = versions[0]
@@ -350,7 +361,7 @@ class ModInfo(commands.Cog):
         ]
         if lines:
             embed.add_field(name="Supports", value="\n".join(lines)[:1024], inline=False)
-        links = [f"[Modrinth]({url})"]
+        links = [f"[Modrinth]({url})"] + ([f"[CurseForge]({cf['url']})"] if cf and cf.get("url") else [])
         for key, label in (("source_url", "Source"), ("issues_url", "Issues"), ("wiki_url", "Wiki"), ("discord_url", "Discord")):
             if project.get(key):
                 links.append(f"[{label}]({project[key]})")
