@@ -1,4 +1,36 @@
 ============================================================
+ BOT UPDATE 10 - CurseForge
+============================================================
+
+EINMALIG: kostenlosen API-Key holen
+  1. console.curseforge.com -> mit deinem CurseForge-Konto anmelden
+  2. "API Keys" -> Key kopieren
+  3. In Discord: /curseforge key -> Key ins Formular einfuegen
+     (steht nirgends im Chat, kommt nicht ins Backup)
+
+Danach findet der Bot deine Mods auf CurseForge selbst (gleicher
+Name/Slug wie auf Modrinth, Autor ErikEdits) und merkt sich deine
+Autoren-ID - neue Mods und Mods, die NUR auf CurseForge sind, kommen
+automatisch dazu (einmal am Tag wird neu gesucht).
+
+Was sich aendert:
+  - Download-Statistik (#📈-mod-stats, /modstats): Modrinth +
+    CurseForge zusammen, pro Mod auch einzeln
+    ("1.240 (Modrinth 900 · CurseForge 340)")
+  - Meilensteine (1.000, 2.500 ... Downloads): zaehlen beides
+  - /mod: Downloads beider Seiten + CurseForge-Link
+  - Neue Versionen: erscheint eine neue Datei auf CurseForge, wartet
+    der Bot 45 Minuten. Ist die gleiche Version dann auch auf Modrinth,
+    wurde sie dort schon angekuendigt -> keine doppelte Meldung. Gibt es
+    sie nur auf CurseForge, kuendigt der Bot sie in #🔔-mod-releases an
+    (mit Link zur Datei, Minecraft-Versionen, Loader).
+
+/curseforge status   welche Mods gefunden wurden, Downloads, letzter Check
+/curseforge sync     jetzt sofort pruefen (auch nach neuen Mods suchen)
+/curseforge key      Key aendern oder entfernen (leer lassen)
+
+
+============================================================
  BOT UPDATE 9 - Minecraft-Logs + Befehle freigeben
 ============================================================
 

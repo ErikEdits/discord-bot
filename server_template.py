@@ -797,6 +797,17 @@ SERVER_TEMPLATE = {
         "mention_role": "Announcements",
     },
 
+    # CurseForge (cogs/curseforge.py, needs a free API key: /curseforge key). Mods are
+    # found automatically by author; downloads are added to the stats and milestones and
+    # versions that only appear on CurseForge are announced in CHANNELS["mod_releases"].
+    "curseforge": {
+        "enabled": True,
+        "author": "",                   # CurseForge author name, empty = Modrinth username
+        "poll_minutes": 30,
+        "release_grace_minutes": 45,    # wait so the Modrinth announcement of the same version comes first
+        "discover_hours": 24,           # look for new mods this often
+    },
+
     # Welcome DM sent to each new member on join. Channel mention placeholders
     # ({rules}, {tickets}, {roles}, {general}, {introductions}) are auto-resolved.
     "welcome_dm": {
