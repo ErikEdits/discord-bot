@@ -2,19 +2,17 @@
  BOT UPDATE 10 - CurseForge
 ============================================================
 
-EINMALIG: kostenlosen API-Key holen
-  1. console.curseforge.com (NICHT curseforge.com) -> anmelden,
-     ggf. Organisation anlegen
-  2. "API Keys" -> Key kopieren (beginnt mit $2a$10$)
-     Achtung: der "API Token" aus curseforge.com -> Settings ->
-     My API Tokens ist ein Upload-Token und funktioniert NICHT
-  3. In Discord: /curseforge key -> Key ins Formular einfuegen
-     (steht nirgends im Chat, kommt nicht ins Backup)
+KEIN KEY NOETIG: Der Bot holt die CurseForge-Daten ueber CFWidget
+(api.cfwidget.com, ein oeffentlicher Dienst). Mods mit gleichem
+Slug wie auf Modrinth (z.B. justquests) findet er selbst; andere
+verknuepfst du mit /curseforge add project:<Link oder Projekt-ID>.
+Ein offizieller Key (/curseforge key, console.curseforge.com) ist
+optional. Lehnt CurseForge den Key ab, nimmt der Bot automatisch
+wieder CFWidget.
 
-Danach findet der Bot deine Mods auf CurseForge selbst (gleicher
-Name/Slug wie auf Modrinth, Autor ErikEdits) und merkt sich deine
-Autoren-ID - neue Mods und Mods, die NUR auf CurseForge sind, kommen
-automatisch dazu (einmal am Tag wird neu gesucht).
+Mit funktionierendem Key sucht der Bot zusaetzlich nach Autor
+(ErikEdits) - dann kommen auch Mods, die NUR auf CurseForge sind,
+automatisch dazu.
 
 Was sich aendert:
   - Download-Statistik (#📈-mod-stats, /modstats): Modrinth +
@@ -30,7 +28,8 @@ Was sich aendert:
 
 /curseforge status   welche Mods gefunden wurden, Downloads, letzter Check
 /curseforge sync     jetzt sofort pruefen (auch nach neuen Mods suchen)
-/curseforge key      Key aendern oder entfernen (leer lassen)
+/curseforge add      Mod per Link oder Projekt-ID verknuepfen
+/curseforge key      optionalen Key aendern oder entfernen (leer lassen)
 
 
 ============================================================
