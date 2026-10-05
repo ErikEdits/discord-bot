@@ -161,7 +161,7 @@ class KeyModal(discord.ui.Modal, title="CurseForge API key"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        value = self.key.value.strip()
+        value = clean_key(self.key.value)
         if not value:
             set_setting(KEY_SETTING, None)
             await interaction.response.send_message("CurseForge key removed.", ephemeral=True)
@@ -170,17 +170,33 @@ class KeyModal(discord.ui.Modal, title="CurseForge API key"):
             await interaction.response.send_message(WRONG_KEY_TEXT, ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        status, _ = await self.cog.request("GET", f"/games/{MINECRAFT}", key=value)
+        status, detail = await self.cog.probe(value)
         if status in (401, 403):
-            hint = "" if value.startswith("$2a$") else "\n\n" + WRONG_KEY_TEXT
-            await interaction.followup.send("CurseForge says this key is invalid - nothing saved." + hint,
-                                            ephemeral=True)
+            log.warning("CurseForge refused the key (HTTP %s): %s", status, detail)
+            if detail.get("blocked"):
+                text = (f"**CurseForge's firewall blocked the bot's server** (HTTP {status}, Cloudflare) - the key "
+                        "itself is probably fine, but CurseForge doesn't let requests from this host through. "
+                        "Nothing saved.")
+            else:
+                text = (f"CurseForge refused this key (HTTP {status}{': ' + detail['message'] if detail.get('message') else ''})"
+                        f" - nothing saved.\nThe bot received a key with **{len(value)} characters** starting with "
+                        f"`{value[:7]}`. A CurseForge API key has 60 characters and starts with `$2a$10$`. "
+                        "Copy it again with the copy button next to the key and paste it without anything else.")
+                if not value.startswith("$2a$"):
+                    text += "\n\n" + WRONG_KEY_TEXT
+            await interaction.followup.send(text, ephemeral=True)
             return
         set_setting(KEY_SETTING, value)
         log.info("CurseForge key set by %s", interaction.user)
         result = await self.cog.sync(force_discovery=True)
-        note = "" if status == 200 else f"\n(Couldn't check the key right now: HTTP {status})"
+        note = "" if status == 200 else f"\n(Couldn't check the key right now: {detail.get('message') or status})"
         await interaction.followup.send(f"✅ Key saved. {result}{note}", ephemeral=True)
+
+
+def clean_key(value: str) -> str:
+    """Remove what sneaks in when copying: spaces, line breaks, zero-width characters, quotes, backticks."""
+    value = re.sub(r"[\s\u200b-\u200f\u2060\ufeff]", "", value or "")
+    return value.strip("\"'`<>")
 
 
 class CurseForge(commands.Cog):
@@ -220,6 +236,29 @@ class CurseForge(commands.Cog):
                 await asyncio.sleep(2)
         log.warning("CurseForge not reachable right now (%s): %s", problem, path)
         return -1, None
+
+    async def probe(self, key: str) -> tuple[int, dict]:
+        """Check a key and say why it failed: (status, {"blocked": Cloudflare?, "message": ...})."""
+        headers = {"x-api-key": key, "Accept": "application/json", "User-Agent": USER_AGENT}
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(f"{API}/games/{MINECRAFT}", headers=headers,
+                                 timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    text = (await r.text())[:2000]
+                    server = (r.headers.get("Server") or "").lower()
+                    html = "html" in (r.headers.get("Content-Type") or "").lower() or text.lstrip().startswith("<")
+                    blocked = r.status in (401, 403) and html and (
+                        "cloudflare" in server or "cf-ray" in {k.lower() for k in r.headers}
+                        or "cloudflare" in text.lower() or "attention required" in text.lower())
+                    message = ""
+                    if not html and text:
+                        message = re.sub(r"\s+", " ", text)[:150]
+                    elif blocked:
+                        m = re.search(r"Error\s*(\d{3,4})", text)
+                        message = f"Cloudflare error {m.group(1)}" if m else "Cloudflare"
+                    return r.status, {"blocked": blocked, "message": message}
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            return -1, {"blocked": False, "message": f"not reachable ({type(exc).__name__})"}
 
     async def search(self, **params) -> list[dict]:
         out, index = [], 0
