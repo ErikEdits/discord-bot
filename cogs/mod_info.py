@@ -157,6 +157,27 @@ def schedule_release_feedback(project: dict, version: dict) -> None:
 _ACTIVE: "ModInfo | None" = None
 
 
+def milestone_embed(project: dict, milestone: int) -> discord.Embed:
+    """The milestone post, with the downloads of Modrinth and CurseForge listed separately."""
+    embed = discord.Embed(
+        title=f"\U0001F389 {project.get('title')} reached {milestone:,} downloads!",
+        description="Thank you all for downloading and playing! ❤️",
+        color=0xF1C40F,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if not project.get("cf_only"):
+        url = f"https://modrinth.com/{project.get('project_type', 'mod')}/{project.get('slug')}"
+        embed.add_field(name="Modrinth", value=f"⬇️ {int(project.get('downloads', 0)):,}\n[Open]({url})")
+    if project.get("cf_url"):
+        embed.add_field(name="CurseForge",
+                        value=f"⬇️ {int(project.get('cf_downloads', 0)):,}\n[Open]({project['cf_url']})")
+    if len(embed.fields) > 1:
+        total = int(project.get("downloads", 0)) + int(project.get("cf_downloads", 0))
+        embed.set_footer(text=f"{total:,} downloads in total (Modrinth + CurseForge)")
+    if project.get("icon_url"):
+        embed.set_thumbnail(url=project["icon_url"])
+    return embed
+
 class ModInfo(commands.Cog):
     def __init__(self, bot):
         global _ACTIVE
@@ -260,18 +281,7 @@ class ModInfo(commands.Cog):
             await self._announce_milestone(project, milestone)
 
     async def _announce_milestone(self, project: dict, milestone: int) -> None:
-        url = f"https://modrinth.com/{project.get('project_type', 'mod')}/{project.get('slug')}"
-        links = [] if project.get("cf_only") else [f"[Modrinth]({url})"]
-        if project.get("cf_url"):
-            links.append(f"[CurseForge]({project['cf_url']})")
-        embed = discord.Embed(
-            title=f"\U0001F389 {project.get('title')} reached {milestone:,} downloads!",
-            description=f"Thank you all for downloading and playing! ❤️\n{' · '.join(links)}",
-            color=0xF1C40F,
-            timestamp=datetime.now(timezone.utc),
-        )
-        if project.get("icon_url"):
-            embed.set_thumbnail(url=project["icon_url"])
+        embed = milestone_embed(project, milestone)
         for guild in self.bot.guilds:
             channel = discord.utils.get(guild.text_channels, name=_config().get("milestone_channel", ""))
             if channel is None:

@@ -1,4 +1,17 @@
 ============================================================
+ BOT UPDATE 11 - Meilensteine mit Aufteilung
+============================================================
+
+Meilenstein-Posts ("JustQuests reached 2,500 downloads!") zaehlen
+Modrinth + CurseForge zusammen. Damit sich niemand wundert, stehen
+die Downloads jetzt einzeln darunter:
+  Modrinth   2,271  [Open]
+  CurseForge   312  [Open]
+  Fusszeile: "2,583 downloads in total (Modrinth + CurseForge)"
+Mods nur auf Modrinth bzw. nur auf CurseForge zeigen nur ihre Seite.
+
+
+============================================================
  BOT UPDATE 10 - CurseForge
 ============================================================
 
