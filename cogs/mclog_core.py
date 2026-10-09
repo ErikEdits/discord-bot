@@ -43,22 +43,33 @@ from datetime import datetime, timedelta
 log = logging.getLogger("setup-bot.mc_logs")
 
 LOC_RE = re.compile(
-    r"Location\{world=(?:CraftWorld\{name=)?([^,}]*)\}?,\s*x=(-?[\d.]+(?:E-?\d+)?),\s*y=(-?[\d.]+(?:E-?\d+)?),"
+    r"Location\{world=(?:CraftWorld\{(?:name|key)=)?([^,}]*)\}?,\s*x=(-?[\d.]+(?:E-?\d+)?),\s*y=(-?[\d.]+(?:E-?\d+)?),"
     r"\s*z=(-?[\d.]+(?:E-?\d+)?)[^}]*\}"
 )
+XYZ_RE = re.compile(r"\bx=(-?[\d.]+)[,\s]+y=(-?[\d.]+)[,\s]+z=(-?[\d.]+)")
+# "Name: text" (COMMAND, CHAT, CONSOLE) or "Name -> VALUE" (GAMEMODE) in the first field
+NAME_PREFIX_RE = re.compile(r"^([A-Za-z0-9_@]{1,16})\s*(?::|->)\s*(.+)$")
+TITLE_RE = re.compile(r"^[\w .-]{2,40} server logs?$", re.I)
+WORLD_KEYS = {"minecraft:overworld": "world", "minecraft:the_nether": "world_nether",
+              "minecraft:the_end": "world_the_end"}
+# Short event names of the UptimeManager log -> the names the rest of the bot uses
+TYPE_ALIASES = {"JOIN": "PLAYER_JOIN", "QUIT": "PLAYER_QUIT", "KICK": "PLAYER_KICK", "COMMAND": "PLAYER_COMMAND",
+                "TELEPORT": "PLAYER_TELEPORT", "GAMEMODE": "PLAYER_GAME_MODE_CHANGE", "CHAT": "PLAYER_CHAT",
+                "RESPAWN": "PLAYER_RESPAWN", "DROP": "PLAYER_DROP_ITEM", "DEATH": "PLAYER_DEATH",
+                "PICKUP": "PLAYER_PICKUP_ITEM", "LOGIN": "PLAYER_LOGIN"}
 TYPE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,48}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9_]{2,16}$")
 KV_RE = re.compile(r"^[a-z_]+=", re.I)
 ENTITY_LIKE_RE = re.compile(r"^[A-Z0-9_]+$")
 JOIN_TYPES = ("PLAYER_JOIN", "PLAYER_QUIT", "PLAYER_LOGIN", "PLAYER_KICK")
 # Events without a player are only counted, except these (rare and useful one by one).
-KEEP_WITHOUT_PLAYER = ("SERVER_", "PLUGIN_", "PLAYER_", "WORLD_LOAD", "WORLD_UNLOAD")
+KEEP_WITHOUT_PLAYER = ("SERVER_", "PLUGIN_", "PLAYER_", "WORLD_LOAD", "WORLD_UNLOAD", "CONSOLE")
 MODES = ("SPECTATOR", "CREATIVE", "SURVIVAL", "ADVENTURE")
 NO_PLAYER_PREFIXES = ("ENTITY_", "SERVER_", "PLUGIN_", "CHUNK_", "WEATHER_", "WORLD_LOAD", "WORLD_UNLOAD",
                       "WORLD_SAVE", "WORLD_INIT", "ITEM_SPAWN", "ITEM_DESPAWN", "CREATURE_", "SPAWNER_",
                       "LIGHTNING_", "STRUCTURE_", "PORTAL_CREATE", "BLOCK_FORM", "BLOCK_SPREAD", "BLOCK_GROW",
                       "BLOCK_FADE", "BLOCK_PHYSICS", "BLOCK_FROM_TO", "LEAVES_DECAY", "BLOCK_BURN", "BLOCK_IGNITE",
-                      "REDSTONE_", "TIME_SKIP", "SPONGE_ABSORB")
+                      "REDSTONE_", "TIME_SKIP", "SPONGE_ABSORB", "DAMAGE", "CONSOLE")
 TEXT_TYPES_SKIP = ("BLOCK_", "ENTITY_")
 VANISH_COMMANDS = {"vanish", "v", "sv", "pv", "supervanish", "premiumvanish", "essentials:vanish", "ev", "evanish"}
 GAMEMODE_COMMANDS = {"gamemode", "gm", "gmc", "gms", "gmsp", "gma", "gmt", "egamemode", "spectator", "creative"}
@@ -113,10 +124,10 @@ def split_lines(texts) -> tuple[list[str], list[str]]:
     events, other = [], []
     for text in texts:
         for line in (text or "").splitlines():
-            line = line.strip().lstrip("•·-*>").strip().strip("`").strip()
+            line = line.strip().lstrip("•·->").strip().strip("`*").strip()
             if "|" in line:
                 events.append(line)
-            elif line:
+            elif line and not TITLE_RE.match(line):
                 other.append(line)
     return events, other
 
@@ -131,10 +142,19 @@ def is_player_type(etype: str) -> bool:
     return not etype.startswith(NO_PLAYER_PREFIXES)
 
 
+KNOWN_TYPES = {"INVENTORY_CLOSE", "ENDER_PEARL_LANDED", "ENDER_PEARL_REMOVE_ALL", "PLAYER_PICKUP_ITEM"}
+
+
 def known_type(etype: str) -> bool:
     """Event types the bot knows what they mean (answers, alerts); others are only stored."""
-    return (etype in TYPE_WORDS["en"] or etype in JOIN_TYPES or "GAME_MODE" in etype or "GAMEMODE" in etype
-            or not is_player_type(etype))
+    return (etype in TYPE_WORDS["en"] or etype in JOIN_TYPES or etype in KNOWN_TYPES or "GAME_MODE" in etype
+            or "GAMEMODE" in etype or not is_player_type(etype))
+
+
+def world_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    return WORLD_KEYS.get(name, name.split(":", 1)[1] if name.startswith("minecraft:") else name)
 
 
 def parse_line(line: str, ts: int, known_players: set[str] | None = None) -> Event | None:
@@ -142,22 +162,31 @@ def parse_line(line: str, ts: int, known_players: set[str] | None = None) -> Eve
     etype = parts[0].upper().replace(" ", "_")
     if not TYPE_RE.match(etype):
         return None
+    etype = TYPE_ALIASES.get(etype, etype)
     ev = Event(ts=ts, type=etype, raw=line[:500])
     locs = LOC_RE.findall(line)
     if locs:
-        ev.world = locs[0][0] or None
+        ev.world = world_name(locs[0][0])
         ev.x, ev.y, ev.z = (_num(v) for v in locs[0][1:])
         if len(locs) > 1:
-            w2 = locs[-1][0] or None
+            w2 = world_name(locs[-1][0])
             ev.x2, ev.y2, ev.z2 = (_num(v) for v in locs[-1][1:])
             if w2 and w2 != ev.world:
                 ev.world = w2  # teleport into another world: the destination world counts
+    else:
+        xyz = XYZ_RE.search(line)
+        if xyz:
+            ev.x, ev.y, ev.z = (_num(v) for v in xyz.groups())
     rest = parts[1:]
+    if rest:
+        m = NAME_PREFIX_RE.match(rest[0])
+        if m and "Location{" not in rest[0]:
+            rest = [m.group(1), m.group(2)] + rest[1:]
     if not ev.world:
         for p in rest:
             m = re.match(r"^world=([^\s|]+)", p)
             if m:
-                ev.world = m.group(1)
+                ev.world = world_name(m.group(1))
                 break
     known = known_players or set()
     first = rest[0].split(" @ ")[0].strip() if rest else ""
@@ -171,14 +200,15 @@ def parse_line(line: str, ts: int, known_players: set[str] | None = None) -> Eve
         rest = rest[1:]
     values, kvs = [], []
     for p in rest:
-        clean = LOC_RE.sub("", p).replace(" @ ", " ").strip(" @->→,;:")
+        clean = XYZ_RE.sub("", LOC_RE.sub("", p)).replace(" @ ", " ").strip(" @->→,;:")
         if clean:
             (kvs if KV_RE.match(clean) else values).append(clean)
     if ev.player is None:
         if first and not KV_RE.match(first) and "Location{" not in first:
             ev.obj = first[:64]
-    elif etype.startswith(("BLOCK_", "ENTITY_")) and values and not values[0].startswith("/"):
-        ev.obj = values[0].split()[0][:64]
+    elif values and not values[0].startswith("/") and (
+            etype.startswith(("BLOCK_", "ENTITY_")) or ENTITY_LIKE_RE.match(values[0].split()[0])):
+        ev.obj = values[0].split()[0][:64]   # material / block / item / inventory (CHEST, POPPY, ...)
     if "GAME_MODE" in etype or "GAMEMODE" in etype:
         found = [m for m in re.findall(r"[A-Z]+", line.upper()) if m in MODES]
         if found:
@@ -808,13 +838,21 @@ ACTIONS = [
     (("gekickt", "kick", "kicked"), ["PLAYER_KICK"]),
     (("spielmodus", "gamemode", "spectator", "creative", "zuschauer", "kreativ"),
      ["PLAYER_GAME_MODE_CHANGE", "GAMEMODE_CHANGE"]),
+    (("geöffnet", "geoeffnet", "aufgemacht", "öffnen", "oeffnen", "inventar", "inventare", "opened", "inventory",
+      "inventories"), ["INVENTORY_OPEN"]),
+    (("gedroppt", "gedropt", "droppen", "weggeworfen", "drop", "drops", "dropped"), ["PLAYER_DROP_ITEM"]),
+    (("chat", "gechattet", "geschrieben", "schrieb", "chatted", "chats"), ["PLAYER_CHAT"]),
+    (("enderperle", "enderperlen", "perle", "perlen", "pearl", "pearls"), ["ENDER_PEARL_THROW"]),
+    (("respawnt", "respawn", "respawns", "wiederbelebt"), ["PLAYER_RESPAWN"]),
+    (("konsole", "console", "commandblock", "befehlsblock"), ["CONSOLE"]),
+    (("geworfen", "werfen", "thrown", "throw"), []),   # known words, no own action ("Enderperlen geworfen")
 ]
 ACTION_VOCAB = {w: types for words, types in ACTIONS for w in words}
 BLOCK_WORDS = ("blöcke", "bloecke", "block", "blocks", "blöcken")
 MATERIAL_WORDS = {"diamant": "DIAMOND", "diamanten": "DIAMOND", "diamond": "DIAMOND", "diamonds": "DIAMOND",
                   "eisen": "IRON", "iron": "IRON", "gold": "GOLD", "erz": "_ORE", "erze": "_ORE", "ore": "_ORE",
                   "ores": "_ORE", "holz": "_LOG", "stamm": "_LOG", "bretter": "PLANKS", "stein": "STONE",
-                  "tnt": "TNT", "lava": "LAVA", "wasser": "WATER", "truhe": "CHEST", "truhen": "CHEST",
+                  "tnt": "TNT", "lava": "LAVA", "wasser": "WATER", "truhe": "CHEST", "truhen": "CHEST", "kisten": "CHEST",
                   "kiste": "CHEST", "chest": "CHEST", "netherit": "ANCIENT_DEBRIS", "netherite": "ANCIENT_DEBRIS",
                   "kohle": "COAL", "coal": "COAL", "smaragd": "EMERALD", "emerald": "EMERALD",
                   "redstone": "REDSTONE", "lapis": "LAPIS", "kupfer": "COPPER", "copper": "COPPER",
@@ -1042,19 +1080,34 @@ TYPE_WORDS = {
            "PLAYER_TELEPORT": ("Teleports", "Teleports", "noun"), "PLAYER_JOIN": ("Logins", "online", "noun"),
            "PLAYER_QUIT": ("Logouts", "Logouts", "noun"), "PLAYER_KICK": ("Kicks", "Kicks", "noun"),
            "WORLD_CHANGE": ("Weltwechsel", "Weltwechsel", "noun"),
-           "PLAYER_GAME_MODE_CHANGE": ("Spielmodus-Wechsel", "Spielmodus", "noun")},
+           "PLAYER_GAME_MODE_CHANGE": ("Spielmodus-Wechsel", "Spielmodus", "noun"),
+           "INVENTORY_OPEN": ("Inventare/Kisten geöffnet", "geöffnet", "done"),
+           "PLAYER_DROP_ITEM": ("Items gedroppt", "gedroppt", "done"),
+           "PLAYER_CHAT": ("Chat-Nachrichten", "Chat", "noun"), "PLAYER_RESPAWN": ("Respawns", "Respawns", "noun"),
+           "ENDER_PEARL_THROW": ("Enderperlen geworfen", "Enderperlen", "done"),
+           "CONSOLE": ("Konsolen-Befehle", "Konsole", "noun")},
     "en": {"BLOCK_BREAK": ("blocks broken", "broken", "done"), "BLOCK_PLACE": ("blocks placed", "placed", "done"),
            "PLAYER_COMMAND": ("commands run", "commands", "done"), "PLAYER_DEATH": ("deaths", "deaths", "noun"),
            "PLAYER_TELEPORT": ("teleports", "teleports", "noun"), "PLAYER_JOIN": ("logins", "online", "noun"),
            "PLAYER_QUIT": ("logouts", "logouts", "noun"), "PLAYER_KICK": ("kicks", "kicks", "noun"),
            "WORLD_CHANGE": ("world changes", "world changes", "noun"),
-           "PLAYER_GAME_MODE_CHANGE": ("game mode changes", "game mode", "noun")},
+           "PLAYER_GAME_MODE_CHANGE": ("game mode changes", "game mode", "noun"),
+           "INVENTORY_OPEN": ("inventories/chests opened", "opened", "done"),
+           "PLAYER_DROP_ITEM": ("items dropped", "dropped", "done"),
+           "PLAYER_CHAT": ("chat messages", "chat", "noun"), "PLAYER_RESPAWN": ("respawns", "respawns", "noun"),
+           "ENDER_PEARL_THROW": ("ender pearls thrown", "ender pearls", "done"),
+           "CONSOLE": ("console commands", "console", "noun")},
 }
 SINGULAR = {"Tode": "Tod", "Teleports": "Teleport", "Logins": "Login", "Logouts": "Logout", "Kicks": "Kick",
             "Befehle ausgeführt": "Befehl ausgeführt", "Blöcke abgebaut": "Block abgebaut",
             "Blöcke platziert": "Block platziert", "deaths": "death", "teleports": "teleport", "logins": "login",
             "logouts": "logout", "kicks": "kick", "commands run": "command run", "blocks broken": "block broken",
-            "blocks placed": "block placed", "world changes": "world change", "game mode changes": "game mode change"}
+            "blocks placed": "block placed", "world changes": "world change", "game mode changes": "game mode change",
+            "Inventare/Kisten geöffnet": "Inventar/Kiste geöffnet", "Items gedroppt": "Item gedroppt",
+            "Chat-Nachrichten": "Chat-Nachricht", "Respawns": "Respawn", "Enderperlen geworfen": "Enderperle geworfen",
+            "Konsolen-Befehle": "Konsolen-Befehl", "inventories/chests opened": "inventory/chest opened",
+            "items dropped": "item dropped", "chat messages": "chat message", "respawns": "respawn",
+            "ender pearls thrown": "ender pearl thrown", "console commands": "console command"}
 PLURALS = {"de": {"cmds": ("Befehl", "Befehle"), "deaths": ("Tod", "Tode"), "reports": ("Meldung", "Meldungen")},
            "en": {"cmds": ("command", "commands"), "deaths": ("death", "deaths"), "reports": ("report", "reports")}}
 
@@ -1484,10 +1537,13 @@ def traffic_problems(st: dict) -> dict:
         missing = (b[0] - a[0]) // 60 - 1
         if missing >= 3:
             gaps.append((a[0] + 60, b[0] - 60, missing))
-    noise = sum(n for t, n in st["types"] if not is_player_type(t) and not t.startswith(("SERVER_", "PLUGIN_")))
+    noisy = [(t, n) for t, n in st["types"]
+             if not is_player_type(t) and not t.startswith(("SERVER_", "PLUGIN_", "CONSOLE"))]
+    noise = sum(n for _, n in noisy)
     lines = sum(n for _, n in st["types"])
     return {"limit_minutes": len(limit), "busiest": busiest, "gaps": gaps,
-            "noise_pct": round(100 * noise / lines) if lines else 0}
+            "noise_pct": round(100 * noise / lines) if lines else 0,
+            "noise_top": [(t, round(100 * n / lines)) for t, n in sorted(noisy, key=lambda x: -x[1])[:3]]}
 
 
 SERVER_OFF_MINUTES = 120   # longer pauses are counted as "server off", not as lost messages
@@ -1541,9 +1597,10 @@ def report_md(st: dict, unknowns: list[tuple], start: int, end: int, tz, source:
                     f"4096 characters each (about 250 lines) - right now it's at most {st['max_lines']}."]
         if pr["noise_pct"] >= 50:
             found = True
-            out.append(f"- ⚠️ **{pr['noise_pct']} % of all lines are mob/entity/world events** (ENTITY_SPAWN, ...). "
-                       "They use up the webhook limit - turning them off in the plugin leaves more room for "
-                       "player events.")
+            top = ", ".join(f"{ty} {pct} %" for ty, pct in pr["noise_top"])
+            out.append(f"- ⚠️ **{pr['noise_pct']} % of all lines are mob/entity/world events** ({top}). "
+                       "They use up the webhook limit - turning them off in the plugin (or logging them only for "
+                       "players) leaves room for the player events.")
         if gaps:
             found = True
             out.append(f"- **Minutes without any message ({len(gaps)}x):** " + ", ".join(

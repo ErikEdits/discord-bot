@@ -1,4 +1,32 @@
 ============================================================
+ BOT UPDATE 14 - Neues Log-Format (UptimeManager)
+============================================================
+
+Aus dem Chat-Scan (14.386 Nachrichten) eingebaut:
+- JOIN / QUIT / KICK / COMMAND / TELEPORT / GAMEMODE / CHAT /
+  RESPAWN / DROP werden verstanden (wie PLAYER_JOIN usw.).
+- "COMMAND | Name: /befehl", "CHAT | Name: text",
+  "GAMEMODE | Name -> CREATIVE": Spieler wird jetzt erkannt.
+  -> Verdachts-DMs fuer Befehle (/tp, /gamemode ...) und Spielmodus-
+     Wechsel funktionieren mit dem neuen Format wieder.
+- CONSOLE-Befehle (Konsole und Befehlsbloecke "@") werden gespeichert.
+- DAMAGE von Mobs wird nur noch gezaehlt (wie Mob-Spawns).
+- INVENTORY_OPEN/CLOSE, ENDER_PEARL_*, DROP: Spieler + Item/Kiste.
+- Welten im Format CraftWorld{key=minecraft:overworld} und
+  Koordinaten "x=73 y=124 z=276" werden verstanden.
+- Die Zeile "**UptimeManager Server Log**" gilt nicht mehr als
+  unbekannt.
+- /mclog ask versteht: Kisten/Inventare geoeffnet, gedroppt, Chat,
+  Enderperlen, Respawns, Konsole.
+
+WICHTIG FUERS PLUGIN: 84 % aller Zeilen waren DAMAGE (allein
+331.548x ARMADILLO durch CAMPFIRE - eine Mob-Farm). Dadurch war der
+Kanal 456 Minuten lang am Discord-Limit und Ereignisse (Bloecke!)
+gingen verloren. DAMAGE nur fuer Spieler loggen (mit Namen statt
+"PLAYER") oder ganz aus.
+
+
+============================================================
  BOT UPDATE 13 - Bericht als .md + ganzen Chat einlesen
 ============================================================
 
