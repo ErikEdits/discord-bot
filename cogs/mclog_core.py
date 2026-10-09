@@ -108,6 +108,35 @@ def message_lines(texts) -> list[str]:
     return lines
 
 
+def split_lines(texts) -> tuple[list[str], list[str]]:
+    """(event lines with "|", other non-empty lines) of a Discord message."""
+    events, other = [], []
+    for text in texts:
+        for line in (text or "").splitlines():
+            line = line.strip().lstrip("•·-*>").strip().strip("`").strip()
+            if "|" in line:
+                events.append(line)
+            elif line:
+                other.append(line)
+    return events, other
+
+
+def shape(text: str, limit: int = 160) -> str:
+    """A line with coordinates and numbers blanked out, so the same kind of line is collected once."""
+    text = re.sub(r"Location\{.*?\}(?:,[^|]*?\})?", "Location{…}", text)
+    return re.sub(r"-?\d+(?:[.,]\d+)*", "#", text)[:limit]
+
+
+def is_player_type(etype: str) -> bool:
+    return not etype.startswith(NO_PLAYER_PREFIXES)
+
+
+def known_type(etype: str) -> bool:
+    """Event types the bot knows what they mean (answers, alerts); others are only stored."""
+    return (etype in TYPE_WORDS["en"] or etype in JOIN_TYPES or "GAME_MODE" in etype or "GAMEMODE" in etype
+            or not is_player_type(etype))
+
+
 def parse_line(line: str, ts: int, known_players: set[str] | None = None) -> Event | None:
     parts = [p.strip() for p in line.split("|")]
     etype = parts[0].upper().replace(" ", "_")
@@ -202,8 +231,51 @@ CREATE TABLE IF NOT EXISTS counts (
     PRIMARY KEY (bucket, type, obj, world, rx, rz)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS alerts (ts INTEGER NOT NULL, player TEXT, kind TEXT, text TEXT);
 CREATE INDEX IF NOT EXISTS alerts_ts ON alerts(ts);
+CREATE TABLE IF NOT EXISTS ingest (
+    minute INTEGER PRIMARY KEY, messages INTEGER NOT NULL, lines INTEGER NOT NULL, events INTEGER NOT NULL,
+    unknown INTEGER NOT NULL, chars INTEGER NOT NULL, max_lines INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS ingest_types (
+    hour INTEGER NOT NULL, type TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (hour, type)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS unknown (
+    kind TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL, first_ts INTEGER NOT NULL, last_ts INTEGER NOT NULL,
+    example TEXT, PRIMARY KEY (kind, key)) WITHOUT ROWID;
 """
 COUNT_BUCKET = 600
+UNKNOWN_MAX_KEYS = 3000        # distinct unknown line shapes kept (the rest is only counted)
+
+
+class Diag:
+    """What came in through the channel, collected between two flushes (see LogStore.add_diag)."""
+
+    def __init__(self):
+        self.minutes: dict[int, list[int]] = {}      # minute -> [messages, lines, events, unknown, chars, max_lines]
+        self.types: Counter = Counter()              # (hour, type) -> lines
+        self.unknown: dict[tuple[str, str], list] = {}   # (kind, key) -> [n, first_ts, last_ts, example]
+
+    def __bool__(self):
+        return bool(self.minutes or self.types or self.unknown)
+
+    def message(self, ts: int, lines: int, chars: int) -> None:
+        m = self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])
+        m[0] += 1
+        m[1] += lines
+        m[4] += chars
+        m[5] = max(m[5], lines)
+
+    def event(self, ts: int, etype: str) -> None:
+        self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])[2] += 1
+        self.types[(ts // 3600 * 3600, etype)] += 1
+
+    def unknown_line(self, ts: int, kind: str, line: str, key: str | None = None, count_line: bool = True) -> None:
+        if count_line:
+            self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])[3] += 1
+        k = (kind, key if key is not None else shape(line))
+        u = self.unknown.get(k)
+        if u is None:
+            self.unknown[k] = [1, ts, ts, line[:500]]
+        else:
+            u[0] += 1
+            u[1], u[2] = min(u[1], ts), max(u[2], ts)
 
 
 class LogStore:
@@ -330,6 +402,72 @@ class LogStore:
         with self._lock:
             self.db.execute("INSERT INTO alerts VALUES (?,?,?,?)", (ts, player, kind, text[:300]))
 
+    def add_diag(self, diag: Diag) -> None:
+        if not diag:
+            return
+        with self._lock:
+            self.db.execute("BEGIN")
+            try:
+                self.db.executemany(
+                    "INSERT INTO ingest VALUES (?,?,?,?,?,?,?) ON CONFLICT(minute) DO UPDATE SET "
+                    "messages = messages + excluded.messages, lines = lines + excluded.lines, "
+                    "events = events + excluded.events, unknown = unknown + excluded.unknown, "
+                    "chars = chars + excluded.chars, max_lines = MAX(max_lines, excluded.max_lines)",
+                    [(m, *v) for m, v in diag.minutes.items()])
+                self.db.executemany(
+                    "INSERT INTO ingest_types VALUES (?,?,?) ON CONFLICT(hour, type) DO UPDATE SET n = n + excluded.n",
+                    [(h, t, n) for (h, t), n in diag.types.items()])
+                stored = self.db.execute("SELECT COUNT(*) FROM unknown").fetchone()[0]
+                for (kind, key), (n, first, last, example) in diag.unknown.items():
+                    exists = self.db.execute("SELECT 1 FROM unknown WHERE kind=? AND key=?", (kind, key)).fetchone()
+                    if not exists and stored >= UNKNOWN_MAX_KEYS:
+                        key, example = "(more lines of this kind - not kept one by one)", None
+                    elif not exists:
+                        stored += 1
+                    self.db.execute(
+                        "INSERT INTO unknown VALUES (?,?,?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
+                        "n = n + excluded.n, first_ts = MIN(first_ts, excluded.first_ts), "
+                        "last_ts = MAX(last_ts, excluded.last_ts)", (kind, key, n, first, last, example))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def ingest_stats(self, start: int, end: int) -> dict:
+        """Messages/lines that came in between start and end (per minute rows + totals)."""
+        with self._lock:
+            rows = self.db.execute("SELECT minute, messages, lines, events, unknown, chars, max_lines FROM ingest "
+                                   "WHERE minute >= ? AND minute <= ? ORDER BY minute",
+                                   (start // 60 * 60, end)).fetchall()
+            types = self.db.execute("SELECT type, SUM(n) FROM ingest_types WHERE hour >= ? AND hour <= ? "
+                                    "GROUP BY type ORDER BY 2 DESC", (start // 3600 * 3600, end)).fetchall()
+            since = self.db.execute("SELECT MIN(minute) FROM ingest").fetchone()[0]
+        total = {k: sum(r[i] for r in rows) for i, k in enumerate(("messages", "lines", "events", "unknown",
+                                                                     "chars"), start=1)}
+        total["max_lines"] = max((r[6] for r in rows), default=0)
+        return {"rows": rows, "types": types, "since": since, **total,
+                "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None}
+
+    def messages_between(self, start: int, end: int) -> tuple[int, int | None]:
+        """(messages, first minute with a message) between start and end."""
+        with self._lock:
+            n, first = self.db.execute("SELECT COALESCE(SUM(messages), 0), MIN(minute) FROM ingest "
+                                       "WHERE minute >= ? AND minute <= ?", (start // 60 * 60, end)).fetchone()
+        return n, first
+
+    def unknowns(self, until: int | None = None) -> list[tuple]:
+        """[(kind, key, n, first_ts, last_ts, example)], most frequent first."""
+        with self._lock:
+            sql, args = "SELECT kind, key, n, first_ts, last_ts, example FROM unknown", []
+            if until is not None:
+                sql, args = sql + " WHERE first_ts <= ?", [until]
+            return self.db.execute(sql + " ORDER BY kind, n DESC", args).fetchall()
+
+    def clear_unknowns(self, until: int) -> int:
+        """Forget unknown lines that were reported (last seen before `until`)."""
+        with self._lock:
+            return self.db.execute("DELETE FROM unknown WHERE last_ts <= ?", (until,)).rowcount
+
     # -------- size control --------
     def size_mb(self) -> float:
         total = 0
@@ -357,6 +495,9 @@ class LogStore:
             deleted += self.db.execute("DELETE FROM ev WHERE ts < ?", (cutoff,)).rowcount
             self.db.execute("DELETE FROM counts WHERE bucket < ?", (cutoff,))
             self.db.execute("DELETE FROM alerts WHERE ts < ?", (cutoff,))
+            self.db.execute("DELETE FROM ingest WHERE minute < ?", (cutoff,))
+            self.db.execute("DELETE FROM ingest_types WHERE hour < ?", (cutoff - 3600,))
+            self.db.execute("DELETE FROM unknown WHERE last_ts < ?", (cutoff,))
             trimmed_to = None
             for _ in range(20):
                 if self.used_mb() <= max_mb * 0.9:
@@ -381,6 +522,8 @@ class LogStore:
             self.db.execute("DELETE FROM ev")
             self.db.execute("DELETE FROM counts")
             self.db.execute("DELETE FROM alerts")
+            for table in ("ingest", "ingest_types", "unknown"):
+                self.db.execute(f"DELETE FROM {table}")
             self.db.executescript("PRAGMA incremental_vacuum;")  # (plain execute only runs one step)
             self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
 
@@ -677,7 +820,7 @@ class Question:
     suspicious: bool = False
     spawns: bool = False
     blocks: bool = False               # "Blöcke" without a verb: placed AND broken
-    intent: str = "what"               # what / count / who / when / where
+    intent: str = "what"               # what / count / who / when / where / size
     lang: str = "en"
     time_text: str = ""
     default_time: bool = True
@@ -778,7 +921,10 @@ def parse_question(text: str, now: datetime, known_players: set[str], retention_
         q.types = ["BLOCK_PLACE", "BLOCK_BREAK"]
     q.suspicious = any(w in low for w in SUSPICIOUS_WORDS)
     q.spawns = any(re.search(rf"\b{w}\b", low) for w in SPAWN_WORDS)
-    if re.search(r"\b(wie ?viele?|wieviel|anzahl|how many|how much|insgesamt|total|gesamt)\b", low):
+    if re.search(r"\b(wie gro(ß|ss)|grö(ß|ss)e|groesse|speicherplatz|how big|how large|size|megabytes?|"
+                 r"kilobytes?|mb|kb|datenmenge|how much data)\b", low):
+        q.intent = "size"
+    elif re.search(r"\b(wie ?viele?|wieviel|anzahl|how many|how much|insgesamt|total|gesamt)\b", low):
         q.intent = "count"
     elif re.search(r"\b(wer|who|welche[rn]? spieler|which player)\b", low):
         q.intent = "who"
@@ -938,6 +1084,19 @@ T = {
         "understood": "Verstanden: {parts}", "u_players": "Spieler {v}", "u_all_players": "alle Spieler",
         "u_action": "Aktion {v}", "u_material": "Material {v}", "u_near": "bei x {x}, z {z}",
         "u_time": "Zeitraum {v}", "u_fuzzy": "Tippfehler erkannt: {v}",
+        "size_in": "{span_cap} kamen **{msgs} Nachrichten** mit **{lines} Log-Zeilen** an – das sind etwa "
+                   "**{size}** Text.",
+        "size_understood": "Davon hat der Bot **{n} verstanden** ({pct} %).",
+        "size_unknown": "**{n} Zeilen** hat er nicht verstanden – die stehen im Bericht (`/mclog report`).",
+        "size_none": "Für diesen Zeitraum gibt es noch keine Nachrichten-Statistik (die zählt der Bot seit {since}).",
+        "size_none_new": "Für diesen Zeitraum gibt es noch keine Nachrichten-Statistik (die zählt der Bot erst seit "
+                         "dem letzten Update).",
+        "size_stored": "Gespeichert davon: **{stored} einzelne Einträge** und **{counted} nur gezählte** "
+                       "(Mob-Spawns usw.).",
+        "size_db": "Die ganze Log-Datenbank ist gerade **{db} MB** groß (Limit {max} MB, sie behält {days} Tage).",
+        "busiest_min": "Meiste Nachrichten in einer Minute: **{n}** ({h} Uhr).",
+        "limit_warn": "⚠️ In **{n} Minute(n)** war der Kanal am Discord-Limit (~30 Nachrichten pro Minute) – da "
+                      "kann das Plugin Ereignisse verloren haben. Details: `/mclog report`.",
     },
     "en": {
         "span_default": "in the last 24 hours", "span": "between {a} and {b}",
@@ -982,6 +1141,18 @@ T = {
         "understood": "Understood: {parts}", "u_players": "player {v}", "u_all_players": "all players",
         "u_action": "action {v}", "u_material": "material {v}", "u_near": "near x {x}, z {z}",
         "u_time": "time {v}", "u_fuzzy": "typo fixed: {v}",
+        "size_in": "{span_cap}, **{msgs} messages** with **{lines} log lines** came in – about **{size}** of text.",
+        "size_understood": "The bot **understood {n}** of them ({pct}%).",
+        "size_unknown": "**{n} lines** weren't understood – they're in the report (`/mclog report`).",
+        "size_none": "There are no message statistics for this time yet (the bot counts them since {since}).",
+        "size_none_new": "There are no message statistics for this time yet (the bot counts them since the last "
+                         "update).",
+        "size_stored": "Stored from that: **{stored} single entries** and **{counted} only counted** "
+                       "(mob spawns etc.).",
+        "size_db": "The whole log database is **{db} MB** right now (limit {max} MB, it keeps {days} days).",
+        "busiest_min": "Most messages in one minute: **{n}** ({h}).",
+        "limit_warn": "⚠️ In **{n} minute(s)** the channel was at Discord's limit (~30 messages per minute) – the "
+                      "plugin may have lost events then. Details: `/mclog report`.",
     },
 }
 
@@ -1083,6 +1254,34 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
     filtered = bool(q.types or q.obj_words or q.near) and not online_q
     flt = dict(base, players=q.players or None, types=q.types or None, obj_words=q.obj_words or None, near=q.near)
 
+    traffic = store.ingest_stats(q.start, q.end)
+    limit_minutes = traffic_problems(traffic)["limit_minutes"] if traffic["rows"] else 0
+    limit_note = L["limit_warn"].format(n=limit_minutes) if limit_minutes else ""
+
+    if q.intent == "size":
+        if traffic["messages"]:
+            parts.append(L["size_in"].format(span_cap=span_cap, msgs=_n(traffic["messages"], q.lang),
+                                             lines=_n(traffic["lines"], q.lang),
+                                             size=size_text(traffic["chars"], q.lang)))
+            pct = round(100 * traffic["events"] / traffic["lines"]) if traffic["lines"] else 100
+            pct = min(pct, 99) if traffic["unknown"] else pct
+            line = L["size_understood"].format(n=_n(traffic["events"], q.lang), pct=pct)
+            if traffic["unknown"]:
+                line += " " + L["size_unknown"].format(n=_n(traffic["unknown"], q.lang))
+            parts.append(line)
+            busiest = max(traffic["rows"], key=lambda r: r[1])
+            parts.append(L["busiest_min"].format(n=busiest[1], h=hm(busiest[0])))
+        else:
+            parts.append(L["size_none"].format(since=t(traffic["since"])) if traffic["since"] else L["size_none_new"])
+        stored = store.count(**base)
+        counted = store.counted_total(q.start, q.end)
+        parts.append(L["size_stored"].format(stored=_n(stored, q.lang), counted=_n(counted, q.lang)))
+        db = f"{stats['size_mb']:.1f}".replace(".", "," if q.lang == "de" else ".")
+        parts.append(L["size_db"].format(db=db, max=f"{store.max_mb:g}", days=f"{store.retention_days:g}"))
+        if limit_note:
+            parts.append(limit_note)
+        return "\n\n".join(parts), None
+
     if q.suspicious:
         alerts = store.alerts(q.start, q.end, q.players or None, 15)
         parts.append(_alerts_block(L, alerts, t) if alerts else L["alerts_none"])
@@ -1179,6 +1378,7 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
         if q.intent in ("when", "where") and newest:
             details.append(L["when"] + "\n" + "\n".join(f"`{fmt_event(e, tz)[:110]}`" for e in newest[:8]))
         parts.append("\n".join(details))
+        parts.append(limit_note)
         return "\n\n".join(p for p in parts if p), flt
 
     # --- what did a player do -------------------------------------------------------------
@@ -1191,7 +1391,7 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
         return "\n\n".join(parts), None
 
     # --- overview of everyone ---------------------------------------------------------------
-    who = [(p, c) for p, c in store.grouped("player", 12, **base) if p != "-"]
+    who = [(p, c) for p, c in store.grouped("player", 25, **base) if p != "-"]
     parts.append((L["overview"] if who else L["overview_none"]).format(span_cap=span_cap, n=len(who)))
     if who:
         by_type = dict(store.grouped("type", 50, **base))
@@ -1200,7 +1400,7 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
                                                  cmds=_pl(by_type.get("PLAYER_COMMAND", 0), "cmds", q.lang),
                                                  deaths=_pl(by_type.get("PLAYER_DEATH", 0), "deaths", q.lang)))
         lines = [L["per_player"]]
-        for p, _ in who[:10]:
+        for p, _ in who:
             pt = dict(store.grouped("type", 50, players=[p], **base))
             evs = store.events(500, False, players=[p], types=list(JOIN_TYPES), **base)
             sess = sessions(evs, q.start, q.end)
@@ -1220,7 +1420,114 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
             parts.append(L["mobs"].format(list=", ".join(f"{_n(n, q.lang)} {o}" for _, o, n in mobs)))
     alerts = store.alerts(q.start, q.end, None, 5)
     parts.append(_alerts_block(L, alerts, t) if alerts else L["alerts_none"])
+    if limit_note:
+        parts.append(limit_note)
     return "\n\n".join(parts), None
+
+
+# ---------------------------------------------------------------------------
+# What came in: report of the channel traffic and the lines the bot didn't understand
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_MESSAGES = 28   # Discord lets a webhook post about 30 messages per minute into a channel
+UNKNOWN_KINDS = {
+    "format": ("Line format not understood", "lines with \"|\" whose first field is no EVENT_TYPE - these are lost"),
+    "type": ("Event types the bot has no meaning for yet", "stored and searchable, but /mclog ask has no words "
+                                                           "for them and they aren't checked for suspicious things"),
+    "no_player": ("No player recognised", "player events without a known player name - only counted, "
+                                          "not shown per player"),
+    "no_location": ("Coordinates not understood", "\"Location\" in the line, but in an unknown format"),
+    "text": ("Text without \"|\"", "lines in the log messages that aren't events"),
+    "embed": ("Embed title / footer / field name", "parts of the embeds around the events"),
+    "attachment": ("Attachments", "files posted in the log channel"),
+}
+
+
+def size_text(chars: int, lang: str = "en") -> str:
+    if chars >= 1_048_576:
+        text = f"{chars / 1_048_576:.1f} MB"
+        return text.replace(".", ",") if lang == "de" else text
+    return f"{max(1, round(chars / 1024)) if chars else 0} KB"
+
+
+def traffic_problems(st: dict) -> dict:
+    """Signs that events got lost before they reached the bot."""
+    rows = st["rows"]
+    limit = [r for r in rows if r[1] >= RATE_LIMIT_MESSAGES]
+    busiest = max(rows, key=lambda r: r[1]) if rows else None
+    gaps = []
+    for a, b in zip(rows, rows[1:]):
+        missing = (b[0] - a[0]) // 60 - 1
+        if missing >= 3:
+            gaps.append((a[0] + 60, b[0] - 60, missing))
+    noise = sum(n for t, n in st["types"] if not is_player_type(t) and not t.startswith(("SERVER_", "PLUGIN_")))
+    lines = sum(n for _, n in st["types"])
+    return {"limit_minutes": len(limit), "busiest": busiest, "gaps": gaps,
+            "noise_pct": round(100 * noise / lines) if lines else 0}
+
+
+def report_text(store: "LogStore", start: int, end: int, tz, unknowns: list[tuple]) -> str:
+    """Plain text report for the admin (sent as a file)."""
+    t = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%d.%m. %H:%M")  # noqa: E731
+    hm = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%H:%M")  # noqa: E731
+    st = store.ingest_stats(start, end)
+    out = ["MINECRAFT LOG REPORT", f"{t(start)} - {t(end)} ({getattr(tz, 'key', tz)})", ""]
+    if not st["messages"]:
+        out.append("No log messages came in during this time.")
+    else:
+        pct = 100 * st["events"] / st["lines"] if st["lines"] else 100
+        out += ["WHAT CAME IN",
+                f"  Messages:        {st['messages']:,}",
+                f"  Log lines:       {st['lines']:,}  (avg {st['lines'] / st['messages']:.1f} per message, "
+                f"max {st['max_lines']})",
+                f"  Understood:      {st['events']:,}  ({pct:.1f} %)",
+                f"  Not understood:  {st['unknown']:,}" + ("  (see below)" if st["unknown"] else ""),
+                f"  Text received:   {size_text(st['chars'])}",
+                f"  First / last:    {t(st['first'])} / {t(st['last'])}", ""]
+        pr = traffic_problems(st)
+        out.append("POSSIBLE GAPS (why numbers can be lower than what really happened)")
+        found = False
+        if pr["busiest"]:
+            out.append(f"  - Busiest minute: {hm(pr['busiest'][0])} with {pr['busiest'][1]} messages.")
+        if pr["limit_minutes"]:
+            found = True
+            out += [f"  - In {pr['limit_minutes']} minute(s) the channel got {RATE_LIMIT_MESSAGES}+ messages. That's "
+                    "Discord's limit for webhooks",
+                    "    (about 30 messages per minute per channel): the plugin has to wait or drops events then.",
+                    "    Fix in the plugin: put more lines into one message - one message can carry 10 embeds",
+                    f"    with 4096 characters each (about 250 lines); right now it's at most {st['max_lines']}."]
+        if pr["noise_pct"] >= 50:
+            found = True
+            out += [f"  - {pr['noise_pct']} % of all lines are mob/entity/world events (ENTITY_SPAWN, ...). They use",
+                    "    up the webhook limit. Turning them off in the plugin leaves more room for player events."]
+        if pr["gaps"]:
+            found = True
+            text = ", ".join(f"{hm(a)}-{hm(b)} ({n} min)" for a, b, n in sorted(pr["gaps"], key=lambda g: -g[2])[:15])
+            out += ["  - Minutes without any message: " + text,
+                    "    (Normal if the server was off or nobody did anything - otherwise messages are missing.)"]
+        if not found:
+            out.append("  - No signs of lost messages on the Discord side.")
+        out.append("")
+        if st["types"]:
+            out.append("LINES PER EVENT TYPE")
+            width = max(len(ty) for ty, _ in st["types"])
+            out += [f"  {ty.ljust(width)}  {n:>9,}" for ty, n in st["types"]]
+            out.append("")
+    out.append(f"NOT (FULLY) UNDERSTOOD - {len(unknowns)} different thing(s)")
+    if not unknowns:
+        out.append("  Nothing - every line was understood.")
+    for kind in list(UNKNOWN_KINDS) + sorted({u[0] for u in unknowns} - set(UNKNOWN_KINDS)):
+        items = [u for u in unknowns if u[0] == kind]
+        if not items:
+            continue
+        title, explain = UNKNOWN_KINDS.get(kind, (kind, ""))
+        out += ["", f"[{title}] - {explain}"]
+        for _, key, n, first, last, example in items:
+            out.append(f"  {n:>7,}x  {key}")
+            out.append(f"            first {t(first)}, last {t(last)}")
+            if example and example != key:
+                out.append(f"            example: {example}")
+    return "\n".join(out) + "\n"
 
 
 # ---------------------------------------------------------------------------

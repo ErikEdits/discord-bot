@@ -676,6 +676,15 @@ SERVER_TEMPLATE = {
         # At most one stored event per player and this many seconds (movement spam).
         "sample_seconds": {"PLAYER_MOVE": 30, "PLAYER_ROTATE": 60, "PLAYER_TOGGLE_SNEAK": 30,
                            "PLAYER_TOGGLE_SPRINT": 30, "PLAYER_ANIMATION": 30, "PLAYER_VELOCITY": 30},
+        # Report by DM when the log channel was (almost) quiet for quiet_minutes after activity:
+        # what came in, signs of lost events and every line the bot didn't understand.
+        "report": {
+            "enabled": True,
+            "quiet_minutes": 60,
+            "quiet_max_messages": 5,    # "almost quiet" = at most this many messages in that time
+            "min_messages": 20,         # only report after at least this many messages since the last report
+            "send_to": [],              # Discord usernames; empty = the server owner
+        },
     },
 
     # Profile picture changes with a before/after image in CHANNELS["avatar_logs"].

@@ -1,4 +1,42 @@
 ============================================================
+ BOT UPDATE 12 - Minecraft-Logs: Bericht + Unbekanntes
+============================================================
+
+WARUM ZU WENIG BLOECKE? Der Bot kann nur zaehlen, was im Kanal
+ankommt. Ab jetzt zaehlt er mit, WAS ankommt (Nachrichten, Zeilen,
+pro Minute) und erkennt, wo etwas verloren gegangen sein kann:
+  - Discord-Limit: ein Webhook darf nur ca. 30 Nachrichten pro
+    Minute in einen Kanal schicken. Ist der Kanal am Limit, muss
+    das Plugin warten oder wirft Ereignisse weg.
+  - Mob-Spam: wie viel Prozent der Zeilen ENTITY_SPAWN usw. sind
+    (die verbrauchen das Limit).
+  - Luecken: Minuten ganz ohne Nachricht.
+  - Wie viele Zeilen der Bot NICHT verstanden hat.
+
+PRIVATE DATEI NACH RUHIGER STUNDE: War im Log-Kanal eine Stunde
+lang (fast) nichts los (max. 5 Nachrichten), nachdem vorher was
+los war (Server aus), schickt der Bot dem Server-Owner per DM eine
+.txt-Datei mit:
+  - was angekommen ist (Nachrichten, Zeilen, MB, pro Event-Typ)
+  - Hinweise auf verlorene Ereignisse (Limit, Luecken, Mob-Spam)
+  - ALLES was er nicht (ganz) verstanden hat: unbekanntes Zeilen-
+    format, Event-Typen ohne Bedeutung, Zeilen ohne Spieler, Koordi-
+    naten in anderem Format, Text ohne "|", andere Embed-Titel/
+    Fusszeilen, Dateianhaenge
+  Gleiche Zeilen werden zusammengefasst (Anzahl + Beispiel).
+  Einstellbar in server_template.py unter mc_logs -> report.
+
+/mclog report [hours]   den Bericht sofort als Datei holen
+/mclog ask "wie gross ist die log datei von 17 bis 23 uhr"
+                        sagt jetzt Nachrichten, Zeilen, MB, wie viel
+                        verstanden wurde und wie gross die Datenbank ist
+Antworten von /mclog ask warnen, wenn im Zeitraum das Discord-Limit
+erreicht war (dann koennen Ereignisse fehlen).
+Text-Dateien (.txt/.log), die der Webhook anhaengt, liest der Bot
+jetzt auch mit. Die Uebersicht zeigt alle aktiven Spieler.
+
+
+============================================================
  BOT UPDATE 11 - Meilensteine mit Aufteilung
 ============================================================
 
