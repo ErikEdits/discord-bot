@@ -15,6 +15,8 @@ and answers questions about them.
                                     with a period it reads the whole log chat of that time again
     /mclog trusted add|remove|list  players never reported (default ErikEdits, ColinTK)
     /mclog notify add|remove|list   who gets the suspicious-activity DMs
+    /mclog cloudflare setup|guide|plugin|status|new-key|on|off
+                                    receive the logs through a Cloudflare mailbox (no Discord limit)
     /mclog ai-key                   OpenRouter key for answers by a free AI model (optional)
     /mclog ai-model [model]         pick the free model
 
@@ -35,6 +37,7 @@ import io
 import logging
 import shutil
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -48,6 +51,8 @@ from cogs.common import DATA_DIR, get_setting, is_admin, load_json, save_json, s
 from cogs.mclog_core import (Diag, Detector, LogStore, answer_question, fmt_event, fmt_pos, is_player_type,
                              known_type, parse_line, parse_question, parse_time_spec, player_summary, report_md,
                              report_text, split_lines, summary_text, understood_text, TITLE_RE)
+from cogs.mclog_cloudflare import (GUIDE, JAVA_FILE, STEP_TEXT, CloudflareError, batch_lines, clean_token,
+                                   fetch_batches, health, setup_mailbox)
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_logs")
@@ -55,6 +60,12 @@ log = logging.getLogger("setup-bot.mc_logs")
 DB_FILE = DATA_DIR / "mc_logs.db"
 STATE_FILE = DATA_DIR / "mc_logs.json"
 KEY_SETTING = "openrouter_api_key"      # data/settings.json, never in backups
+CF_SETTING = "mclog_cloudflare"         # data/settings.json: token, url, keys (never in backups)
+CF_POLL_SECONDS = 5
+CF_IDLE_AFTER = 120                       # no lines for this long -> poll only every CF_IDLE_POLL seconds
+CF_IDLE_POLL = 30
+CF_SILENT_SECONDS = 120                   # Cloudflare silent this long -> read the Discord channel again
+DEDUP_SECONDS = 900                       # a line from Discord can be this much later than the same from Cloudflare
 OPENROUTER = "https://openrouter.ai/api/v1"
 ALERT_MAX_AGE = 15 * 60                   # don't alert about events older than this (catch-up)
 CATCH_UP_MAX_MESSAGES = 40000
@@ -89,8 +100,14 @@ def _state() -> dict:
     data.setdefault("ai_model", None)
     data.setdefault("newest_msg_id", None)
     data.setdefault("oldest_msg_id", None)
-    data.setdefault("reported_until", 0)  # message time up to which the "not understood" report was sent
+    data.setdefault("reported_until", 0)
+    data.setdefault("cf_after", 0)         # last mailbox batch the bot stored  # message time up to which the "not understood" report was sent
     return data
+
+
+def _cf_settings() -> dict:
+    value = get_setting(CF_SETTING) or {}
+    return value if isinstance(value, dict) else {}
 
 
 def _report_config() -> dict:
@@ -152,12 +169,49 @@ class KeyModal(discord.ui.Modal, title="OpenRouter API key"):
                                         ephemeral=True)
 
 
+class CloudflareModal(discord.ui.Modal, title="Cloudflare API token"):
+    token = discord.ui.TextInput(label="API token (see /mclog cloudflare guide)", max_length=200,
+                                 placeholder="Paste the token you created on dash.cloudflare.com")
+    account = discord.ui.TextInput(label="Account ID (optional)", required=False, max_length=64,
+                                   placeholder="Only needed if the token sees several accounts")
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.run_cf_setup(interaction, self.token.value, self.account.value)
+
+
+def cf_guide_embeds() -> list[discord.Embed]:
+    embed = discord.Embed(
+        title="☁️ Minecraft logs through Cloudflare - how to get the API token",
+        description=("Discord only lets a webhook post about **30 messages per minute** - too little for the server "
+                     "logs. With Cloudflare the plugin sends its logs to a small free **mailbox** (a Cloudflare "
+                     "Worker) and the bot picks them up every few seconds. The bot builds the mailbox itself - "
+                     "it only needs an **API token** from you:"),
+        color=0xF38020)
+    for name, value in GUIDE:
+        embed.add_field(name=name, value=value[:1024], inline=False)
+    return [embed]
+
+
+def cf_config_text(cfg: dict) -> str:
+    return (f"cloudflare:\n"
+            f"  enabled: true\n"
+            f"  url: \"{cfg.get('url', '')}/ingest\"\n"
+            f"  key: \"{cfg.get('ingest_key', '')}\"\n"
+            f"  interval-seconds: 2\n")
+
+
 class McLogs(commands.Cog):
     group = app_commands.Group(name="mclog", description="Minecraft server logs (administrator).",
                                default_permissions=discord.Permissions(administrator=True), guild_only=True)
     trusted_group = app_commands.Group(name="trusted", description="Players that are never reported.",
                                        parent=group)
     notify_group = app_commands.Group(name="notify", description="Who gets suspicious-activity DMs.", parent=group)
+    cf_group = app_commands.Group(name="cloudflare", description="Receive the logs through Cloudflare (no Discord limit).",
+                                  parent=group)
 
     def __init__(self, bot):
         self.bot = bot
@@ -169,6 +223,13 @@ class McLogs(commands.Cog):
         self.players: set[str] = set()
         self.importing = False
         self.scanning = 0           # chat scan running: messages read + 1
+        self.cf_session: aiohttp.ClientSession | None = None
+        self.cf_data_at = 0.0       # last time the mailbox had lines
+        self.cf_ok_at = 0.0         # last successful poll
+        self.cf_last_poll = 0.0
+        self.cf_error: str | None = None
+        self.cf_batches = 0
+        self.discord_lines: dict[str, deque] = {}   # lines read from Discord while Cloudflare was silent
         self.caught_up = False
         self._models_cache: tuple[float, list] = (0, [])
         self._state_dirty = False
@@ -186,11 +247,15 @@ class McLogs(commands.Cog):
         self.flush_loop.start()
         self.maintenance_loop.start()
         self.report_loop.start()
+        self.cf_loop.start()
 
     async def cog_unload(self):
         self.flush_loop.cancel()
         self.maintenance_loop.cancel()
         self.report_loop.cancel()
+        self.cf_loop.cancel()
+        if self.cf_session is not None:
+            await self.cf_session.close()
         await self.flush()
         if self.store is not None:
             await self.db(self.store.close)
@@ -222,28 +287,38 @@ class McLogs(commands.Cog):
             diag.unknown_line(ts, "text", line)
         events = []
         for line in lines:
-            ev = parse_line(line, ts, players)
-            if ev is None:
-                diag.unknown_line(ts, "format", line)
-                continue
-            diag.event(ts, ev.type)
-            if not known_type(ev.type):
-                diag.unknown_line(ts, "type", line, ev.type, count_line=False)
-            if ev.player is None and is_player_type(ev.type):
-                first = line.split("|")[1].split(" @ ")[0].strip()
-                diag.unknown_line(ts, "no_player", line, f"{ev.type} | {first[:40] or '(empty)'}", count_line=False)
-            if "Location" in line and ev.x is None:
-                diag.unknown_line(ts, "no_location", line, count_line=False)
-            if ev.player:
-                players.add(ev.player)
-            events.append(ev)
+            ev = self.analyse_line(line, ts, diag, players)
+            if ev is not None:
+                events.append(ev)
         return events
+
+    @staticmethod
+    def analyse_line(line: str, ts: int, diag: Diag, players: set[str]):
+        """One event line -> Event (or None); not-understood parts go into `diag`."""
+        ev = parse_line(line, ts, players)
+        if ev is None:
+            diag.unknown_line(ts, "format", line)
+            return None
+        diag.event(ts, ev.type)
+        if not known_type(ev.type):
+            diag.unknown_line(ts, "type", line, ev.type, count_line=False)
+        if ev.player is None and is_player_type(ev.type):
+            first = line.split("|")[1].split(" @ ")[0].strip()
+            diag.unknown_line(ts, "no_player", line, f"{ev.type} | {first[:40] or '(empty)'}", count_line=False)
+        if "Location" in line and ev.x is None:
+            diag.unknown_line(ts, "no_location", line, count_line=False)
+        if ev.player:
+            players.add(ev.player)
+        return ev
 
     def ingest_message(self, message: discord.Message, live: bool = True, extra: list[str] | None = None) -> int:
         ts = int(message.created_at.timestamp())
         events = self.analyse(message, self.diag, self.players, extra)
         alert = live and time.time() - ts < ALERT_MAX_AGE
+        remember = _cf_settings().get("enabled") and live
         for ev in events:
+            if remember:  # Discord stands in for Cloudflare: don't count these lines again when they arrive there
+                self.discord_lines.setdefault(ev.raw, deque()).append(ts)
             self.buffer.append(ev)
             if live:  # imports run newest -> oldest and would confuse the detector's state
                 for found in self.detector.feed(ev, alert=alert):
@@ -284,7 +359,97 @@ class McLogs(commands.Cog):
             return
         if not (message.webhook_id or message.author.bot) or message.author.id == getattr(self.bot.user, "id", 0):
             return
+        if self.cloudflare_active():
+            return  # the logs come through Cloudflare; the channel is only the stand-in
         await self.ingest(message)
+
+    # -------- Cloudflare mailbox -------------------------------------------
+
+    def cloudflare_active(self) -> bool:
+        """Cloudflare is set up and delivered lines within the last CF_SILENT_SECONDS."""
+        return bool(_cf_settings().get("enabled")) and time.time() - self.cf_data_at < CF_SILENT_SECONDS
+
+    def ingest_cf_batch(self, batch: dict) -> int:
+        received = int(batch.get("received") or time.time() * 1000)
+        body = batch.get("body") or ""
+        items = batch_lines(body, received)
+        diag = self.diag
+        diag.message(received // 1000, len(items), len(body), cloudflare=True)
+        now = time.time()
+        n = 0
+        for ts, line in items:
+            if "|" not in line:
+                if not TITLE_RE.match(line.strip("*` ")):
+                    diag.unknown_line(ts, "text", line)
+                continue
+            seen = self.discord_lines.get(line[:500])
+            if seen:  # already read from the Discord channel while Cloudflare was silent
+                match = next((t for t in seen if -5 <= t - ts <= DEDUP_SECONDS), None)
+                if match is not None:
+                    seen.remove(match)
+                    continue
+            ev = self.analyse_line(line, ts, diag, self.players)
+            if ev is None:
+                continue
+            n += 1
+            self.buffer.append(ev)
+            for found in self.detector.feed(ev, alert=now - ts < ALERT_MAX_AGE):
+                asyncio.create_task(self.send_alert(found))
+        return n
+
+    async def poll_cloudflare(self) -> int:
+        """Pick up new batches from the mailbox. Returns the number of events."""
+        cfg = _cf_settings()
+        if not cfg.get("enabled") or not cfg.get("url") or self.store is None:
+            return 0
+        now = time.time()
+        if now - self.cf_data_at > CF_IDLE_AFTER and now - self.cf_last_poll < CF_IDLE_POLL:
+            return 0  # nothing came for a while (server off): ask less often
+        self.cf_last_poll = now
+        total = 0
+        if self.cf_session is None or self.cf_session.closed:
+            self.cf_session = aiohttp.ClientSession()
+        for _ in range(20):   # follow "more" a few times when there's a backlog
+            after = int(_state()["cf_after"] or 0)
+            try:
+                data = await fetch_batches(self.cf_session, cfg["url"], cfg["bot_key"], after)
+            except Exception as exc:
+                if not self.cf_error:
+                    log.warning("Cloudflare mailbox: %s", exc)
+                self.cf_error = str(exc)[:200] or type(exc).__name__
+                return total
+            if self.cf_error:
+                log.info("Cloudflare mailbox reachable again")
+            self.cf_error = None
+            self.cf_ok_at = time.time()
+            batches = data.get("batches") or []
+            if not batches:
+                break
+            for batch in batches:
+                total += self.ingest_cf_batch(batch)
+            await self.flush()  # stored before telling the mailbox it may delete them
+            state = _state()
+            state["cf_after"] = max(int(b["id"]) for b in batches)
+            save_json(STATE_FILE, state)
+            self.cf_data_at = time.time()
+            self.cf_batches += len(batches)
+            if not data.get("more"):
+                break
+        cutoff = time.time() - DEDUP_SECONDS - 60
+        for line in [k for k, q in self.discord_lines.items() if not q or q[-1] < cutoff]:
+            self.discord_lines.pop(line, None)
+        return total
+
+    @tasks.loop(seconds=CF_POLL_SECONDS)
+    async def cf_loop(self):
+        try:
+            await self.poll_cloudflare()
+        except Exception:
+            log.exception("Cloudflare mailbox poll failed")
+
+    @cf_loop.before_loop
+    async def _before_cf(self):
+        await self.bot.wait_until_ready()
 
     async def flush(self):
         if self.buffer and self.store is not None:
@@ -322,8 +487,8 @@ class McLogs(commands.Cog):
         """Read what was posted while the bot was offline."""
         channel = self.bot.get_channel(self._channel_id() or 0)
         newest = _state()["newest_msg_id"]
-        if not isinstance(channel, discord.TextChannel) or newest is None:
-            return
+        if not isinstance(channel, discord.TextChannel) or newest is None or _cf_settings().get("enabled"):
+            return  # (with Cloudflare the mailbox kept everything while the bot was offline)
         cutoff = discord.utils.utcnow() - timedelta(days=float(_config().get("retention_days", 4)))
         after = max(discord.Object(newest).created_at, cutoff)
         count = lines = 0
@@ -925,6 +1090,178 @@ class McLogs(commands.Cog):
                 pass
         log.info("Minecraft chat scan (%d days) by %s: %d messages, %d unknown, %ds", days, interaction.user,
                  count, unknown, took)
+
+    # -------- /mclog cloudflare ---------------------------------------------
+
+    @cf_group.command(name="guide", description="Step by step: where to get the Cloudflare API token.")
+    async def cf_guide(self, interaction: discord.Interaction):
+        if not await self._guard(interaction, need_store=False):
+            return
+        await interaction.response.send_message(embeds=cf_guide_embeds(), ephemeral=True)
+
+    @cf_group.command(name="setup", description="Enter the Cloudflare API token - the bot builds the log mailbox.")
+    async def cf_setup(self, interaction: discord.Interaction):
+        if not await self._guard(interaction, need_store=False):
+            return
+        await interaction.response.send_modal(CloudflareModal(self))
+
+    async def run_cf_setup(self, interaction: discord.Interaction, token: str, account_id: str | None) -> None:
+        await interaction.response.send_message("☁️ Setting up the Cloudflare mailbox ...", ephemeral=True)
+        done: list[str] = []
+
+        async def progress(step):
+            done.append(step)
+            lines = [f"✅ {STEP_TEXT[s]}" for s in done[:-1]] + [f"⏳ {STEP_TEXT[step]} ..."]
+            try:
+                await interaction.edit_original_response(content="☁️ **Cloudflare setup**\n" + "\n".join(lines))
+            except discord.HTTPException:
+                pass
+
+        old = _cf_settings()
+        same_place = old.get("account_id") and old.get("account_id") == ((account_id or "").strip() or old["account_id"])
+        keys = {k: old[k] for k in ("ingest_key", "bot_key") if old.get(k)} if same_place else None
+        try:
+            info = await setup_mailbox(token, account_id, progress, keys=keys)
+        except CloudflareError as exc:
+            lines = [f"✅ {STEP_TEXT[s]}" for s in done[:-1]]
+            lines.append(f"❌ **{STEP_TEXT.get(exc.step, exc.step)}:** {exc.message}")
+            if exc.hint:
+                lines.append(f"\n💡 {exc.hint}")
+            lines.append("\nNothing was saved. Step-by-step help: `/mclog cloudflare guide`")
+            await interaction.edit_original_response(content="☁️ **Cloudflare setup failed**\n" + "\n".join(lines))
+            log.warning("Cloudflare setup by %s failed at %s: %s", interaction.user, exc.step, exc.message)
+            return
+        settings = dict(info, token=clean_token(token), enabled=True)
+        settings.pop("healthy", None)
+        set_setting(CF_SETTING, settings)
+        if not keys or info["db_id"] != old.get("db_id"):
+            state = _state()
+            state["cf_after"] = 0   # (ids start again in a new database)
+            save_json(STATE_FILE, state)
+        self.cf_data_at = 0.0
+        self.cf_error = None
+        log.info("Cloudflare mailbox set up by %s: %s", interaction.user, info["url"])
+        embed = discord.Embed(title="✅ Cloudflare mailbox ready", color=0x2ECC71, description=(
+            "The plugin can now send its logs here - the bot picks them up every few seconds.\n"
+            + ("" if info["healthy"] else "⏳ The new address isn't reachable yet - that can take a few minutes, "
+                                          "the bot keeps trying.\n")
+            + "\n**Next:** `/mclog cloudflare plugin` gives you the Java file and these lines for the plugin's "
+              "`config.yml`:"))
+        embed.add_field(name="config.yml", value=f"```yaml\n{cf_config_text(settings)}```", inline=False)
+        embed.add_field(name="Account", value=info["account_name"], inline=True)
+        embed.add_field(name="Keys", value="kept" if keys else "new", inline=True)
+        embed.set_footer(text="Keep the key secret - whoever has it can send fake logs. Running setup again keeps "
+                              "the key; /mclog cloudflare new-key makes a new one.")
+        await interaction.edit_original_response(content=None, embed=embed)
+
+    @cf_group.command(name="plugin", description="Java file + config.yml lines for the Minecraft plugin.")
+    async def cf_plugin(self, interaction: discord.Interaction):
+        if not await self._guard(interaction, need_store=False):
+            return
+        cfg = _cf_settings()
+        if not cfg.get("url"):
+            await interaction.response.send_message("Set up Cloudflare first: `/mclog cloudflare setup` "
+                                                    "(help: `/mclog cloudflare guide`).", ephemeral=True)
+            return
+        text = (
+            "**Plugin side** - 3 steps:\n"
+            "1. Put `CloudflareLogSender.java` into your plugin (change the `package` line to your package).\n"
+            "2. Add the lines from `config.yml` to the plugin's config.\n"
+            "3. In `onEnable()` create the sender, call `cloudflare.log(line)` everywhere the plugin builds a log "
+            "line for the Discord webhook, and `cloudflare.shutdown()` in `onDisable()` - the exact code is at the "
+            "top of the Java file.\n"
+            "Format of a line: the same as now, e.g. `BLOCK_BREAK | Steve | STONE @ Location{...}`. The sender adds "
+            "the exact time and sends everything every 2 seconds in one batch.\n"
+            "The Discord webhook can stay: if Cloudflare is down for 2 minutes the bot reads the channel again "
+            "(lines are not counted twice).")
+        files = [discord.File(io.BytesIO(JAVA_FILE.read_bytes()), filename="CloudflareLogSender.java"),
+                 discord.File(io.BytesIO(cf_config_text(cfg).encode()), filename="config.yml")]
+        await interaction.response.send_message(text, files=files, ephemeral=True)
+
+    @cf_group.command(name="status", description="Is the Cloudflare mailbox working?")
+    async def cf_status(self, interaction: discord.Interaction):
+        if not await self._guard(interaction, need_store=False):
+            return
+        cfg = _cf_settings()
+        if not cfg.get("url"):
+            await interaction.response.send_message("Cloudflare isn't set up - `/mclog cloudflare guide` shows how.",
+                                                    ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if self.cf_session is None or self.cf_session.closed:
+            self.cf_session = aiohttp.ClientSession()
+        try:
+            h = await health(self.cf_session, cfg["url"])
+        except Exception as exc:
+            h = {"ok": False, "error": type(exc).__name__}
+        now = time.time()
+        if not cfg.get("enabled"):
+            mode = "⏸️ off (`/mclog cloudflare on`) - the bot reads the Discord channel"
+        elif self.cloudflare_active():
+            mode = "✅ receiving - the Discord channel is only the stand-in"
+        elif self.cf_error:
+            mode = f"⚠️ mailbox not reachable ({self.cf_error}) - the bot reads the Discord channel"
+        else:
+            mode = "🟡 waiting for the plugin - nothing came in the last 2 minutes (Discord channel is read)"
+        embed = discord.Embed(title="☁️ Cloudflare mailbox", color=0xF38020, description=mode)
+        embed.add_field(name="Address", value=cfg["url"], inline=False)
+        embed.add_field(name="Mailbox", value=(f"online, {h.get('pending', 0)} batch(es) waiting" if h.get("ok")
+                                               else f"not reachable {h.get('error') or h.get('status') or ''}"))
+        embed.add_field(name="Last lines", value=(f"<t:{int(self.cf_data_at)}:R>" if self.cf_data_at else
+                                                  "none since the bot started"))
+        embed.add_field(name="Last check", value=f"<t:{int(self.cf_ok_at)}:R>" if self.cf_ok_at else "-")
+        if self.store is not None:
+            st = await self.db(self.store.ingest_stats, int(now - 86400), int(now))
+            embed.add_field(name="Last 24h", value=f"{st['cf']:,} Cloudflare batches · "
+                                                   f"{st['messages'] - st['cf']:,} Discord messages")
+        embed.set_footer(text=f"Account: {cfg.get('account_name', '?')} · checks every {CF_POLL_SECONDS}s "
+                              f"(every {CF_IDLE_POLL}s when nothing comes)")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @cf_group.command(name="new-key", description="Make a new plugin key (the old one stops working).")
+    async def cf_new_key(self, interaction: discord.Interaction):
+        if not await self._guard(interaction, need_store=False):
+            return
+        cfg = _cf_settings()
+        if not cfg.get("token"):
+            await interaction.response.send_message("Set up Cloudflare first: `/mclog cloudflare setup`.",
+                                                    ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            info = await setup_mailbox(cfg["token"], cfg.get("account_id"), keys={"bot_key": cfg.get("bot_key")})
+        except CloudflareError as exc:
+            await interaction.followup.send(f"❌ {STEP_TEXT.get(exc.step, exc.step)}: {exc.message}"
+                                            + (f"\n💡 {exc.hint}" if exc.hint else ""), ephemeral=True)
+            return
+        cfg.update(ingest_key=info["ingest_key"], url=info["url"])
+        set_setting(CF_SETTING, cfg)
+        await interaction.followup.send("✅ New key - put it into the plugin's config.yml:\n"
+                                        f"```yaml\n{cf_config_text(cfg)}```", ephemeral=True)
+
+    @cf_group.command(name="off", description="Stop picking up logs from Cloudflare (read the Discord channel).")
+    async def cf_off(self, interaction: discord.Interaction):
+        await self._cf_switch(interaction, False)
+
+    @cf_group.command(name="on", description="Pick up the logs from Cloudflare again.")
+    async def cf_on(self, interaction: discord.Interaction):
+        await self._cf_switch(interaction, True)
+
+    async def _cf_switch(self, interaction: discord.Interaction, on: bool) -> None:
+        if not await self._guard(interaction, need_store=False):
+            return
+        cfg = _cf_settings()
+        if not cfg.get("url"):
+            await interaction.response.send_message("Set up Cloudflare first: `/mclog cloudflare setup`.",
+                                                    ephemeral=True)
+            return
+        cfg["enabled"] = on
+        set_setting(CF_SETTING, cfg)
+        self.cf_data_at = 0.0
+        await interaction.response.send_message(
+            "✅ Cloudflare on - the bot picks up the logs from the mailbox." if on else
+            "⏸️ Cloudflare off - the bot reads the Discord channel. The mailbox keeps what the plugin sends "
+            "(7 days) until you turn it on again.", ephemeral=True)
 
     @trusted_group.command(name="add", description="Never report this Minecraft player.")
     async def trusted_add(self, interaction: discord.Interaction, name: str):

@@ -263,7 +263,8 @@ CREATE TABLE IF NOT EXISTS alerts (ts INTEGER NOT NULL, player TEXT, kind TEXT, 
 CREATE INDEX IF NOT EXISTS alerts_ts ON alerts(ts);
 CREATE TABLE IF NOT EXISTS ingest (
     minute INTEGER PRIMARY KEY, messages INTEGER NOT NULL, lines INTEGER NOT NULL, events INTEGER NOT NULL,
-    unknown INTEGER NOT NULL, chars INTEGER NOT NULL, max_lines INTEGER NOT NULL) WITHOUT ROWID;
+    unknown INTEGER NOT NULL, chars INTEGER NOT NULL, max_lines INTEGER NOT NULL,
+    cf INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS ingest_types (
     hour INTEGER NOT NULL, type TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (hour, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS unknown (
@@ -278,27 +279,32 @@ class Diag:
     """What came in through the channel, collected between two flushes (see LogStore.add_diag)."""
 
     def __init__(self):
-        self.minutes: dict[int, list[int]] = {}      # minute -> [messages, lines, events, unknown, chars, max_lines]
+        # minute -> [messages, lines, events, unknown, chars, max_lines, cloudflare batches (part of messages)]
+        self.minutes: dict[int, list[int]] = {}
         self.types: Counter = Counter()              # (hour, type) -> lines
         self.unknown: dict[tuple[str, str], list] = {}   # (kind, key) -> [n, first_ts, last_ts, example]
 
     def __bool__(self):
         return bool(self.minutes or self.types or self.unknown)
 
-    def message(self, ts: int, lines: int, chars: int) -> None:
-        m = self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])
+    def _minute(self, ts: int) -> list[int]:
+        return self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0, 0])
+
+    def message(self, ts: int, lines: int, chars: int, cloudflare: bool = False) -> None:
+        m = self._minute(ts)
         m[0] += 1
         m[1] += lines
         m[4] += chars
         m[5] = max(m[5], lines)
+        m[6] += 1 if cloudflare else 0
 
     def event(self, ts: int, etype: str) -> None:
-        self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])[2] += 1
+        self._minute(ts)[2] += 1
         self.types[(ts // 3600 * 3600, etype)] += 1
 
     def unknown_line(self, ts: int, kind: str, line: str, key: str | None = None, count_line: bool = True) -> None:
         if count_line:
-            self.minutes.setdefault(ts // 60 * 60, [0, 0, 0, 0, 0, 0])[3] += 1
+            self._minute(ts)[3] += 1
         k = (kind, key if key is not None else shape(line))
         u = self.unknown.get(k)
         if u is None:
@@ -321,6 +327,7 @@ class Diag:
             types[etype] += n
         total = {k: sum(r[i] for r in rows) for i, k in enumerate(("messages", "lines", "events", "unknown",
                                                                      "chars"), start=1)}
+        total["cf"] = sum(r[7] for r in rows)
         return {"rows": rows, "types": types.most_common(), "since": rows[0][0] if rows else None, **total,
                 "max_lines": max((r[6] for r in rows), default=0),
                 "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None}
@@ -351,6 +358,8 @@ class LogStore:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA cache_size=-4000")
         self.db.executescript(SCHEMA)
+        if "cf" not in [r[1] for r in self.db.execute("PRAGMA table_info(ingest)")]:
+            self.db.execute("ALTER TABLE ingest ADD COLUMN cf INTEGER NOT NULL DEFAULT 0")
         self._ids: dict[str, int] = {n: i for i, n in self.db.execute("SELECT id, name FROM names")}
         self._names: dict[int, str] = {i: n for n, i in self._ids.items()}
         self._fix_misread_players()
@@ -462,10 +471,12 @@ class LogStore:
             self.db.execute("BEGIN")
             try:
                 self.db.executemany(
-                    "INSERT INTO ingest VALUES (?,?,?,?,?,?,?) ON CONFLICT(minute) DO UPDATE SET "
+                    "INSERT INTO ingest (minute, messages, lines, events, unknown, chars, max_lines, cf) "
+                    "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(minute) DO UPDATE SET "
                     "messages = messages + excluded.messages, lines = lines + excluded.lines, "
                     "events = events + excluded.events, unknown = unknown + excluded.unknown, "
-                    "chars = chars + excluded.chars, max_lines = MAX(max_lines, excluded.max_lines)",
+                    "chars = chars + excluded.chars, max_lines = MAX(max_lines, excluded.max_lines), "
+                    "cf = cf + excluded.cf",
                     [(m, *v) for m, v in diag.minutes.items()])
                 self.db.executemany(
                     "INSERT INTO ingest_types VALUES (?,?,?) ON CONFLICT(hour, type) DO UPDATE SET n = n + excluded.n",
@@ -490,7 +501,7 @@ class LogStore:
     def ingest_stats(self, start: int, end: int) -> dict:
         """Messages/lines that came in between start and end (per minute rows + totals)."""
         with self._lock:
-            rows = self.db.execute("SELECT minute, messages, lines, events, unknown, chars, max_lines FROM ingest "
+            rows = self.db.execute("SELECT minute, messages, lines, events, unknown, chars, max_lines, cf FROM ingest "
                                    "WHERE minute >= ? AND minute <= ? ORDER BY minute",
                                    (start // 60 * 60, end)).fetchall()
             types = self.db.execute("SELECT type, SUM(n) FROM ingest_types WHERE hour >= ? AND hour <= ? "
@@ -499,6 +510,7 @@ class LogStore:
         total = {k: sum(r[i] for r in rows) for i, k in enumerate(("messages", "lines", "events", "unknown",
                                                                      "chars"), start=1)}
         total["max_lines"] = max((r[6] for r in rows), default=0)
+        total["cf"] = sum(r[7] for r in rows)
         return {"rows": rows, "types": types, "since": since, **total,
                 "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None}
 
@@ -1530,7 +1542,7 @@ def size_text(chars: int, lang: str = "en") -> str:
 def traffic_problems(st: dict) -> dict:
     """Signs that events got lost before they reached the bot."""
     rows = st["rows"]
-    limit = [r for r in rows if r[1] >= RATE_LIMIT_MESSAGES]
+    limit = [r for r in rows if r[1] - r[7] >= RATE_LIMIT_MESSAGES]   # (Cloudflare batches have no such limit)
     busiest = max(rows, key=lambda r: r[1]) if rows else None
     gaps = []
     for a, b in zip(rows, rows[1:]):
@@ -1574,7 +1586,8 @@ def report_md(st: dict, unknowns: list[tuple], start: int, end: int, tz, source:
     else:
         pct = 100 * st["events"] / st["lines"] if st["lines"] else 100
         out += ["## What came in", "", "| | |", "|---|---:|",
-                f"| Messages | {st['messages']:,} |",
+                (f"| Messages | {st['messages']:,} ({st['messages'] - st['cf']:,} Discord, {st['cf']:,} Cloudflare "
+                 f"batches) |" if st.get("cf") else f"| Messages | {st['messages']:,} |"),
                 f"| Log lines | {st['lines']:,} |",
                 f"| Lines per message | avg {st['lines'] / st['messages']:.1f}, max {st['max_lines']} |",
                 f"| Understood | {st['events']:,} ({pct:.1f} %) |",
