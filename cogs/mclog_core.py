@@ -272,10 +272,33 @@ class Diag:
         k = (kind, key if key is not None else shape(line))
         u = self.unknown.get(k)
         if u is None:
-            self.unknown[k] = [1, ts, ts, line[:500]]
-        else:
-            u[0] += 1
-            u[1], u[2] = min(u[1], ts), max(u[2], ts)
+            if len(self.unknown) >= UNKNOWN_MAX_KEYS:
+                k = (kind, "(more lines of this kind - not kept one by one)")
+                u = self.unknown.setdefault(k, [0, ts, ts, []])
+            else:
+                self.unknown[k] = [1, ts, ts, [line[:500]]]
+                return
+        u[0] += 1
+        u[1], u[2] = min(u[1], ts), max(u[2], ts)
+        if len(u[3]) < 3 and line[:500] not in u[3]:
+            u[3].append(line[:500])
+
+    def stats(self) -> dict:
+        """Same shape as LogStore.ingest_stats(), from what was collected in memory."""
+        rows = sorted((m, *v) for m, v in self.minutes.items())
+        types = Counter()
+        for (_, etype), n in self.types.items():
+            types[etype] += n
+        total = {k: sum(r[i] for r in rows) for i, k in enumerate(("messages", "lines", "events", "unknown",
+                                                                     "chars"), start=1)}
+        return {"rows": rows, "types": types.most_common(), "since": rows[0][0] if rows else None, **total,
+                "max_lines": max((r[6] for r in rows), default=0),
+                "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None}
+
+    def unknowns(self) -> list[tuple]:
+        """Same shape as LogStore.unknowns() (with a list of up to 3 examples)."""
+        return sorted(((k, key, n, first, last, ex) for (k, key), (n, first, last, ex) in self.unknown.items()),
+                      key=lambda u: (u[0], -u[2]))
 
 
 class LogStore:
@@ -418,7 +441,8 @@ class LogStore:
                     "INSERT INTO ingest_types VALUES (?,?,?) ON CONFLICT(hour, type) DO UPDATE SET n = n + excluded.n",
                     [(h, t, n) for (h, t), n in diag.types.items()])
                 stored = self.db.execute("SELECT COUNT(*) FROM unknown").fetchone()[0]
-                for (kind, key), (n, first, last, example) in diag.unknown.items():
+                for (kind, key), (n, first, last, examples) in diag.unknown.items():
+                    example = examples[0] if examples else None
                     exists = self.db.execute("SELECT 1 FROM unknown WHERE kind=? AND key=?", (kind, key)).fetchone()
                     if not exists and stored >= UNKNOWN_MAX_KEYS:
                         key, example = "(more lines of this kind - not kept one by one)", None
@@ -1466,68 +1490,92 @@ def traffic_problems(st: dict) -> dict:
             "noise_pct": round(100 * noise / lines) if lines else 0}
 
 
-def report_text(store: "LogStore", start: int, end: int, tz, unknowns: list[tuple]) -> str:
-    """Plain text report for the admin (sent as a file)."""
+SERVER_OFF_MINUTES = 120   # longer pauses are counted as "server off", not as lost messages
+
+
+def _code(text: str) -> str:
+    return "`" + str(text).replace("`", "'") + "`"
+
+
+def report_text(store: "LogStore", start: int, end: int, tz, unknowns: list[tuple], source: str = "") -> str:
+    """Markdown report from the stored statistics (see report_md)."""
+    return report_md(store.ingest_stats(start, end), unknowns, start, end, tz, source)
+
+
+def report_md(st: dict, unknowns: list[tuple], start: int, end: int, tz, source: str = "") -> str:
+    """Markdown report for the admin (sent as a .md file): what came in, signs of lost
+    events and everything the bot didn't (fully) understand."""
+    long = end - start > 86400
     t = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%d.%m. %H:%M")  # noqa: E731
-    hm = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%H:%M")  # noqa: E731
-    st = store.ingest_stats(start, end)
-    out = ["MINECRAFT LOG REPORT", f"{t(start)} - {t(end)} ({getattr(tz, 'key', tz)})", ""]
+    hm = (lambda ts: t(ts)) if long else (lambda ts: datetime.fromtimestamp(ts, tz).strftime("%H:%M"))  # noqa: E731
+    out = ["# ⛏️ Minecraft log report", "",
+           f"**Time:** {t(start)} – {t(end)} ({getattr(tz, 'key', tz)})  "]
+    if source:
+        out.append(f"**Source:** {source}  ")
+    out.append("")
     if not st["messages"]:
-        out.append("No log messages came in during this time.")
+        out.append("_No log messages came in during this time._")
     else:
         pct = 100 * st["events"] / st["lines"] if st["lines"] else 100
-        out += ["WHAT CAME IN",
-                f"  Messages:        {st['messages']:,}",
-                f"  Log lines:       {st['lines']:,}  (avg {st['lines'] / st['messages']:.1f} per message, "
-                f"max {st['max_lines']})",
-                f"  Understood:      {st['events']:,}  ({pct:.1f} %)",
-                f"  Not understood:  {st['unknown']:,}" + ("  (see below)" if st["unknown"] else ""),
-                f"  Text received:   {size_text(st['chars'])}",
-                f"  First / last:    {t(st['first'])} / {t(st['last'])}", ""]
+        out += ["## What came in", "", "| | |", "|---|---:|",
+                f"| Messages | {st['messages']:,} |",
+                f"| Log lines | {st['lines']:,} |",
+                f"| Lines per message | avg {st['lines'] / st['messages']:.1f}, max {st['max_lines']} |",
+                f"| Understood | {st['events']:,} ({pct:.1f} %) |",
+                f"| Not understood | {st['unknown']:,} |",
+                f"| Text received | {size_text(st['chars'])} |",
+                f"| First / last message | {t(st['first'])} / {t(st['last'])} |", ""]
         pr = traffic_problems(st)
-        out.append("POSSIBLE GAPS (why numbers can be lower than what really happened)")
+        gaps = [g for g in pr["gaps"] if g[2] < SERVER_OFF_MINUTES]
+        off = [g for g in pr["gaps"] if g[2] >= SERVER_OFF_MINUTES]
+        out += ["## Possible gaps", "_Why numbers can be lower than what really happened._", ""]
         found = False
         if pr["busiest"]:
-            out.append(f"  - Busiest minute: {hm(pr['busiest'][0])} with {pr['busiest'][1]} messages.")
+            out.append(f"- **Busiest minute:** {hm(pr['busiest'][0])} with {pr['busiest'][1]} messages.")
         if pr["limit_minutes"]:
             found = True
-            out += [f"  - In {pr['limit_minutes']} minute(s) the channel got {RATE_LIMIT_MESSAGES}+ messages. That's "
-                    "Discord's limit for webhooks",
-                    "    (about 30 messages per minute per channel): the plugin has to wait or drops events then.",
-                    "    Fix in the plugin: put more lines into one message - one message can carry 10 embeds",
-                    f"    with 4096 characters each (about 250 lines); right now it's at most {st['max_lines']}."]
+            out += [f"- ⚠️ **In {pr['limit_minutes']:,} minute(s) the channel got {RATE_LIMIT_MESSAGES}+ messages.** "
+                    "That's Discord's limit for webhooks (about 30 messages per minute per channel): the plugin "
+                    "has to wait or drops events then.",
+                    "  - Fix in the plugin: put more lines into one message. One message can carry 10 embeds with "
+                    f"4096 characters each (about 250 lines) - right now it's at most {st['max_lines']}."]
         if pr["noise_pct"] >= 50:
             found = True
-            out += [f"  - {pr['noise_pct']} % of all lines are mob/entity/world events (ENTITY_SPAWN, ...). They use",
-                    "    up the webhook limit. Turning them off in the plugin leaves more room for player events."]
-        if pr["gaps"]:
+            out.append(f"- ⚠️ **{pr['noise_pct']} % of all lines are mob/entity/world events** (ENTITY_SPAWN, ...). "
+                       "They use up the webhook limit - turning them off in the plugin leaves more room for "
+                       "player events.")
+        if gaps:
             found = True
-            text = ", ".join(f"{hm(a)}-{hm(b)} ({n} min)" for a, b, n in sorted(pr["gaps"], key=lambda g: -g[2])[:15])
-            out += ["  - Minutes without any message: " + text,
-                    "    (Normal if the server was off or nobody did anything - otherwise messages are missing.)"]
+            out.append(f"- **Minutes without any message ({len(gaps)}x):** " + ", ".join(
+                f"{hm(a)}–{hm(b)} ({n} min)" for a, b, n in sorted(gaps, key=lambda g: -g[2])[:10]))
+            out.append("  - Normal if nobody did anything - otherwise messages are missing.")
+        if off:
+            out.append(f"- **Longer pauses (probably server off):** {len(off)}x, e.g. " + ", ".join(
+                f"{t(a)}–{t(b)}" for a, b, _ in sorted(off, key=lambda g: -g[2])[:5]))
         if not found:
-            out.append("  - No signs of lost messages on the Discord side.")
+            out.append("- ✅ No signs of lost messages on the Discord side.")
         out.append("")
         if st["types"]:
-            out.append("LINES PER EVENT TYPE")
-            width = max(len(ty) for ty, _ in st["types"])
-            out += [f"  {ty.ljust(width)}  {n:>9,}" for ty, n in st["types"]]
+            out += ["## Lines per event type", "", "| Event type | Lines | Bot knows it |", "|---|---:|:---:|"]
+            out += [f"| {ty} | {n:,} | {'✅' if known_type(ty) else '❓'} |" for ty, n in st["types"]]
             out.append("")
-    out.append(f"NOT (FULLY) UNDERSTOOD - {len(unknowns)} different thing(s)")
+    out += [f"## Not (fully) understood - {len(unknowns)} different thing(s)", ""]
     if not unknowns:
-        out.append("  Nothing - every line was understood.")
+        out.append("✅ Nothing - every line was understood.")
     for kind in list(UNKNOWN_KINDS) + sorted({u[0] for u in unknowns} - set(UNKNOWN_KINDS)):
         items = [u for u in unknowns if u[0] == kind]
         if not items:
             continue
         title, explain = UNKNOWN_KINDS.get(kind, (kind, ""))
-        out += ["", f"[{title}] - {explain}"]
-        for _, key, n, first, last, example in items:
-            out.append(f"  {n:>7,}x  {key}")
-            out.append(f"            first {t(first)}, last {t(last)}")
-            if example and example != key:
-                out.append(f"            example: {example}")
-    return "\n".join(out) + "\n"
+        out += [f"### {title} ({len(items)})", f"_{explain}_", ""]
+        for _, key, n, first, last, examples in items:
+            examples = [examples] if isinstance(examples, str) else list(examples or [])
+            out.append(f"- **{n:,}×** {_code(key)} – first {t(first)}, last {t(last)}")
+            for ex in examples:
+                if ex != key:
+                    out.append(f"  - Example: {_code(ex)}")
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
 
 
 # ---------------------------------------------------------------------------
