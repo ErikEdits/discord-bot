@@ -11,6 +11,7 @@ and answers questions about them.
     /mclog search ...               events by player, action, material, area and time
     /mclog ask question             question in plain language (German or English)
     /mclog import hours             read older messages of the channel (max. retention)
+    /mclog report [hours]           what came in + every line the bot didn't understand (file)
     /mclog trusted add|remove|list  players never reported (default ErikEdits, ColinTK)
     /mclog notify add|remove|list   who gets the suspicious-activity DMs
     /mclog ai-key                   OpenRouter key for answers by a free AI model (optional)
@@ -21,6 +22,10 @@ time, actions, materials and coordinates from the question and summarises the da
 With a key it asks a FREE OpenRouter model (only ids ending in ":free" whose price is
 0 are ever used - checked against OpenRouter's model list before every question).
 Suspicious events of untrusted players are sent by DM right away (see Detector).
+When the channel has been (almost) quiet for an hour after activity - usually the
+server went off - the owner gets the report file by DM: how many messages and lines
+came in, signs of lost events (Discord's webhook limit, gaps) and every line the bot
+didn't understand, so the parser can be improved.
 All commands are administrator commands; the owner can unlock them with /grant.
 """
 
@@ -39,8 +44,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.common import DATA_DIR, get_setting, is_admin, load_json, save_json, set_setting
-from cogs.mclog_core import (Detector, LogStore, answer_question, fmt_event, fmt_pos, message_lines, parse_line,
-                             parse_question, parse_time_spec, player_summary, summary_text, understood_text)
+from cogs.mclog_core import (Diag, Detector, LogStore, answer_question, fmt_event, fmt_pos, is_player_type,
+                             known_type, parse_line, parse_question, parse_time_spec, player_summary, report_text, split_lines,
+                             summary_text, understood_text)
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_logs")
@@ -53,6 +59,9 @@ ALERT_MAX_AGE = 15 * 60                   # don't alert about events older than 
 CATCH_UP_MAX_MESSAGES = 40000
 AI_CONTEXT_CHARS = 24000
 PREFERRED_MODELS = ("deepseek", "llama-3.3-70b", "llama-4", "qwen3", "gemini", "mistral-small", "gpt-oss")
+KNOWN_TITLES = {"EntityLagFix Server Log"}
+TEXT_EXTENSIONS = (".txt", ".log", ".csv", ".json", ".yml", ".yaml")
+ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
 ACTION_CHOICES = ["BLOCK_BREAK", "BLOCK_PLACE", "PLAYER_COMMAND", "PLAYER_TELEPORT", "PLAYER_JOIN", "PLAYER_QUIT",
                   "PLAYER_DEATH", "PLAYER_KICK", "WORLD_CHANGE", "PLAYER_GAME_MODE_CHANGE"]
 
@@ -76,7 +85,14 @@ def _state() -> dict:
     data.setdefault("ai_model", None)
     data.setdefault("newest_msg_id", None)
     data.setdefault("oldest_msg_id", None)
+    data.setdefault("reported_until", 0)  # message time up to which the "not understood" report was sent
     return data
+
+
+def _report_config() -> dict:
+    cfg = {"enabled": True, "quiet_minutes": 60, "quiet_max_messages": 5, "min_messages": 20, "send_to": []}
+    cfg.update(_config().get("report", {}))
+    return cfg
 
 
 def _trusted() -> list[str]:
@@ -145,6 +161,7 @@ class McLogs(commands.Cog):
         self.store: LogStore | None = None
         self.detector = Detector(_config(), _trusted())
         self.buffer: list = []
+        self.diag = Diag()
         self.players: set[str] = set()
         self.importing = False
         self.caught_up = False
@@ -163,10 +180,12 @@ class McLogs(commands.Cog):
         self.players = await self.db(self.store.known_players)
         self.flush_loop.start()
         self.maintenance_loop.start()
+        self.report_loop.start()
 
     async def cog_unload(self):
         self.flush_loop.cancel()
         self.maintenance_loop.cancel()
+        self.report_loop.cancel()
         await self.flush()
         if self.store is not None:
             await self.db(self.store.close)
@@ -177,19 +196,40 @@ class McLogs(commands.Cog):
     def _channel_id(self) -> int | None:
         return _state()["channel_id"]
 
-    def ingest_message(self, message: discord.Message, live: bool = True) -> int:
+    def ingest_message(self, message: discord.Message, live: bool = True, extra: list[str] | None = None) -> int:
+        ts = int(message.created_at.timestamp())
+        diag = self.diag
         texts = [message.content]
         for embed in message.embeds:
             texts.append(embed.description)
             texts += [f.value for f in embed.fields]
-        ts = int(message.created_at.timestamp())
+            parts = [("title", embed.title), ("footer", embed.footer.text if embed.footer else None),
+                     ("author", embed.author.name if embed.author else None)]
+            parts += [("field", f.name) for f in embed.fields]
+            for what, text in parts:
+                if text and text not in KNOWN_TITLES:
+                    diag.unknown_line(ts, "embed", text, f"{what}: {text[:120]}", count_line=False)
+        texts += extra or []
+        lines, other = split_lines(texts)
+        diag.message(ts, len(lines) + len(other), sum(len(t or "") for t in texts))
+        for line in other:
+            diag.unknown_line(ts, "text", line)
         alert = live and time.time() - ts < ALERT_MAX_AGE
         n = 0
-        for line in message_lines(texts):
+        for line in lines:
             ev = parse_line(line, ts, self.players)
             if ev is None:
+                diag.unknown_line(ts, "format", line)
                 continue
             n += 1
+            diag.event(ts, ev.type)
+            if not known_type(ev.type):
+                diag.unknown_line(ts, "type", line, ev.type, count_line=False)
+            if ev.player is None and is_player_type(ev.type):
+                first = line.split("|")[1].split(" @ ")[0].strip() if line.count("|") else ""
+                diag.unknown_line(ts, "no_player", line, f"{ev.type} | {first[:40] or '(empty)'}", count_line=False)
+            if "Location" in line and ev.x is None:
+                diag.unknown_line(ts, "no_location", line, count_line=False)
             if ev.player:
                 self.players.add(ev.player)
             self.buffer.append(ev)
@@ -201,13 +241,35 @@ class McLogs(commands.Cog):
             self._state_dirty = True
         return n
 
+    async def ingest(self, message: discord.Message, live: bool = True) -> int:
+        """ingest_message() plus the lines of text files attached to the message."""
+        extra = []
+        ts = int(message.created_at.timestamp())
+        for att in message.attachments:
+            name = att.filename.lower()
+            readable = name.endswith(TEXT_EXTENSIONS) or (att.content_type or "").startswith("text/")
+            if not readable or att.size > ATTACHMENT_MAX_BYTES:
+                why = "too big" if readable else "not a text file"
+                self.diag.unknown_line(ts, "attachment", att.filename,
+                                       f"{name.rsplit('.', 1)[-1] if '.' in name else name} file, {why} - not read",
+                                       count_line=False)
+                continue
+            try:
+                extra.append((await att.read()).decode("utf-8", "replace"))
+                self.diag.unknown_line(ts, "attachment", att.filename,
+                                       f"{name.rsplit('.', 1)[-1]} file - read, its lines were used", count_line=False)
+            except (discord.HTTPException, discord.NotFound):
+                self.diag.unknown_line(ts, "attachment", att.filename, "file couldn't be downloaded",
+                                       count_line=False)
+        return self.ingest_message(message, live, extra)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.guild is None or message.channel.id != self._channel_id():
             return
         if not (message.webhook_id or message.author.bot) or message.author.id == getattr(self.bot.user, "id", 0):
             return
-        self.ingest_message(message)
+        await self.ingest(message)
 
     async def flush(self):
         if self.buffer and self.store is not None:
@@ -216,6 +278,12 @@ class McLogs(commands.Cog):
                 await self.db(self.store.add, batch)
             except Exception:
                 log.exception("Couldn't store %d Minecraft log events", len(batch))
+        if self.diag and self.store is not None:
+            diag, self.diag = self.diag, Diag()
+            try:
+                await self.db(self.store.add_diag, diag)
+            except Exception:
+                log.exception("Couldn't store the Minecraft log statistics")
         if self._state_dirty:
             self._state_dirty = False
             state = _state()
@@ -247,7 +315,7 @@ class McLogs(commands.Cog):
         try:
             async for message in channel.history(limit=CATCH_UP_MAX_MESSAGES, after=after, oldest_first=True):
                 if message.webhook_id or message.author.bot:
-                    lines += self.ingest_message(message, live=True)
+                    lines += await self.ingest(message, live=True)
                 count += 1
                 if count % 500 == 0:
                     await self.flush()
@@ -276,6 +344,72 @@ class McLogs(commands.Cog):
 
     @maintenance_loop.before_loop
     async def _before_maintenance(self):
+        await self.bot.wait_until_ready()
+
+    # -------- report of what came in / wasn't understood ---------------------
+
+    async def build_report(self, start: int, end: int, until_unknown: int | None = None) -> tuple[bytes, str]:
+        await self.flush()
+        unknowns = await self.db(self.store.unknowns, until_unknown)
+        text = await self.db(report_text, self.store, start, end, _tz(), unknowns)
+        return text.encode("utf-8"), f"mc-log-report-{datetime.fromtimestamp(end, _tz()):%Y-%m-%d-%H%M}.txt"
+
+    def report_recipients(self, guild: discord.Guild) -> list[discord.Member]:
+        names = _report_config().get("send_to") or []
+        members = [m for m in (guild.get_member_named(n) for n in names) if m]
+        if not members and guild.owner:
+            members = [guild.owner]
+        return [m for m in members if not m.bot]
+
+    async def check_quiet(self, now: float | None = None) -> bool:
+        """After activity, an (almost) quiet hour sends the report to the owner. Returns True if sent."""
+        cfg = _report_config()
+        if not cfg.get("enabled", True) or self.store is None:
+            return False
+        await self.flush()
+        now = int(now or time.time())
+        quiet = int(float(cfg.get("quiet_minutes", 60)) * 60)
+        reported = int(_state()["reported_until"] or 0)
+        total, first = await self.db(self.store.messages_between, reported + 1, now)
+        if total < int(cfg.get("min_messages", 20)) or first is None or first > now - quiet:
+            return False  # (almost) nothing new, or the activity started less than an hour ago
+        recent, _ = await self.db(self.store.messages_between, now - quiet, now)
+        if recent > int(cfg.get("quiet_max_messages", 5)):
+            return False
+        channel = self.bot.get_channel(self._channel_id() or 0)
+        guild = getattr(channel, "guild", None) or (self.bot.guilds[0] if self.bot.guilds else None)
+        if guild is None:
+            return False
+        tz = _tz()
+        data, filename = await self.build_report(max(first, reported + 1), now, now)
+        text = (f"⛏️ **Minecraft log report** {datetime.fromtimestamp(first, tz):%d.%m. %H:%M} - "
+                f"{datetime.fromtimestamp(now, tz):%H:%M}\nThe log channel has been quiet for "
+                f"{quiet // 60} minutes. The file shows what came in, signs of lost events and every line I "
+                f"didn't understand.")
+        sent = False
+        for member in self.report_recipients(guild):
+            try:
+                await member.send(text, file=discord.File(io.BytesIO(data), filename=filename))
+                sent = True
+            except (discord.Forbidden, discord.HTTPException):
+                log.warning("Couldn't DM the Minecraft log report to %s", member)
+        state = _state()
+        state["reported_until"] = now
+        save_json(STATE_FILE, state)
+        await self.db(self.store.clear_unknowns, now)
+        log.info("Minecraft log report (%d messages since %s) %s", total, datetime.fromtimestamp(first, tz),
+                 "sent" if sent else "not delivered")
+        return sent
+
+    @tasks.loop(minutes=5)
+    async def report_loop(self):
+        try:
+            await self.check_quiet()
+        except Exception:
+            log.exception("Minecraft log report failed")
+
+    @report_loop.before_loop
+    async def _before_report(self):
         await self.bot.wait_until_ready()
 
     # -------- alerts -------------------------------------------------------
@@ -652,7 +786,7 @@ class McLogs(commands.Cog):
             oldest = None
             async for message in channel.history(limit=None, after=after, before=before, oldest_first=False):
                 if message.webhook_id or message.author.bot:
-                    lines += self.ingest_message(message, live=False)
+                    lines += await self.ingest(message, live=False)
                 oldest = message.id
                 count += 1
                 if count % 1000 == 0:
@@ -669,6 +803,26 @@ class McLogs(commands.Cog):
             await interaction.followup.send(f"Import stopped: {exc}", ephemeral=True)
         finally:
             self.importing = False
+
+    @group.command(name="report", description="What came in from the server and every line the bot didn't understand.")
+    @app_commands.describe(hours="How many hours back (default: since the last report, max. 24h back)")
+    async def report(self, interaction: discord.Interaction,
+                     hours: app_commands.Range[int, 1, 240] | None = None):
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        now = int(time.time())
+        oldest = now - int(float(_config().get("retention_days", 4)) * 86400)
+        if hours:
+            start = now - hours * 3600
+        else:
+            start = max(int(_state()["reported_until"] or 0) + 1, now - 86400)
+        data, filename = await self.build_report(max(start, oldest), now)
+        file = discord.File(io.BytesIO(data), filename=filename)
+        await interaction.followup.send(
+            "⛏️ Report - lines in the not-understood list stay until the next automatic report (sent by DM "
+            f"after {int(float(_report_config().get('quiet_minutes', 60)))} quiet minutes).",
+            file=file, ephemeral=True)
 
     @trusted_group.command(name="add", description="Never report this Minecraft player.")
     async def trusted_add(self, interaction: discord.Interaction, name: str):
