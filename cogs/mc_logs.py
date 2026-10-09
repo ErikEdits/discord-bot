@@ -11,7 +11,8 @@ and answers questions about them.
     /mclog search ...               events by player, action, material, area and time
     /mclog ask question             question in plain language (German or English)
     /mclog import hours             read older messages of the channel (max. retention)
-    /mclog report [hours]           what came in + every line the bot didn't understand (file)
+    /mclog report [period|days]     what came in + every line the bot didn't understand (.md file);
+                                    with a period it reads the whole log chat of that time again
     /mclog trusted add|remove|list  players never reported (default ErikEdits, ColinTK)
     /mclog notify add|remove|list   who gets the suspicious-activity DMs
     /mclog ai-key                   OpenRouter key for answers by a free AI model (optional)
@@ -45,8 +46,8 @@ from discord.ext import commands, tasks
 
 from cogs.common import DATA_DIR, get_setting, is_admin, load_json, save_json, set_setting
 from cogs.mclog_core import (Diag, Detector, LogStore, answer_question, fmt_event, fmt_pos, is_player_type,
-                             known_type, parse_line, parse_question, parse_time_spec, player_summary, report_text, split_lines,
-                             summary_text, understood_text)
+                             known_type, parse_line, parse_question, parse_time_spec, player_summary, report_md,
+                             report_text, split_lines, summary_text, understood_text)
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_logs")
@@ -62,6 +63,9 @@ PREFERRED_MODELS = ("deepseek", "llama-3.3-70b", "llama-4", "qwen3", "gemini", "
 KNOWN_TITLES = {"EntityLagFix Server Log"}
 TEXT_EXTENSIONS = (".txt", ".log", ".csv", ".json", ".yml", ".yaml")
 ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+MAX_REPORT_BYTES = 7 * 1024 * 1024        # Discord file limit for bots is 8 MB (more with boosts)
+INTERACTION_MINUTES = 14                  # slash command replies can be edited for 15 minutes
+SCAN_SPEED = 5000                         # roughly messages per minute Discord lets the bot read
 ACTION_CHOICES = ["BLOCK_BREAK", "BLOCK_PLACE", "PLAYER_COMMAND", "PLAYER_TELEPORT", "PLAYER_JOIN", "PLAYER_QUIT",
                   "PLAYER_DEATH", "PLAYER_KICK", "WORLD_CHANGE", "PLAYER_GAME_MODE_CHANGE"]
 
@@ -90,7 +94,7 @@ def _state() -> dict:
 
 
 def _report_config() -> dict:
-    cfg = {"enabled": True, "quiet_minutes": 60, "quiet_max_messages": 5, "min_messages": 20, "send_to": []}
+    cfg = {"enabled": True, "quiet_minutes": 60, "quiet_max_messages": 30, "min_messages": 20, "send_to": []}
     cfg.update(_config().get("report", {}))
     return cfg
 
@@ -164,6 +168,7 @@ class McLogs(commands.Cog):
         self.diag = Diag()
         self.players: set[str] = set()
         self.importing = False
+        self.scanning = 0           # chat scan running: messages read + 1
         self.caught_up = False
         self._models_cache: tuple[float, list] = (0, [])
         self._state_dirty = False
@@ -196,9 +201,10 @@ class McLogs(commands.Cog):
     def _channel_id(self) -> int | None:
         return _state()["channel_id"]
 
-    def ingest_message(self, message: discord.Message, live: bool = True, extra: list[str] | None = None) -> int:
+    def analyse(self, message: discord.Message, diag: Diag, players: set[str],
+                extra: list[str] | None = None) -> list:
+        """Events of a message; statistics and not-understood lines go into `diag`."""
         ts = int(message.created_at.timestamp())
-        diag = self.diag
         texts = [message.content]
         for embed in message.embeds:
             texts.append(embed.description)
@@ -214,24 +220,30 @@ class McLogs(commands.Cog):
         diag.message(ts, len(lines) + len(other), sum(len(t or "") for t in texts))
         for line in other:
             diag.unknown_line(ts, "text", line)
-        alert = live and time.time() - ts < ALERT_MAX_AGE
-        n = 0
+        events = []
         for line in lines:
-            ev = parse_line(line, ts, self.players)
+            ev = parse_line(line, ts, players)
             if ev is None:
                 diag.unknown_line(ts, "format", line)
                 continue
-            n += 1
             diag.event(ts, ev.type)
             if not known_type(ev.type):
                 diag.unknown_line(ts, "type", line, ev.type, count_line=False)
             if ev.player is None and is_player_type(ev.type):
-                first = line.split("|")[1].split(" @ ")[0].strip() if line.count("|") else ""
+                first = line.split("|")[1].split(" @ ")[0].strip()
                 diag.unknown_line(ts, "no_player", line, f"{ev.type} | {first[:40] or '(empty)'}", count_line=False)
             if "Location" in line and ev.x is None:
                 diag.unknown_line(ts, "no_location", line, count_line=False)
             if ev.player:
-                self.players.add(ev.player)
+                players.add(ev.player)
+            events.append(ev)
+        return events
+
+    def ingest_message(self, message: discord.Message, live: bool = True, extra: list[str] | None = None) -> int:
+        ts = int(message.created_at.timestamp())
+        events = self.analyse(message, self.diag, self.players, extra)
+        alert = live and time.time() - ts < ALERT_MAX_AGE
+        for ev in events:
             self.buffer.append(ev)
             if live:  # imports run newest -> oldest and would confuse the detector's state
                 for found in self.detector.feed(ev, alert=alert):
@@ -239,28 +251,31 @@ class McLogs(commands.Cog):
         if self._newest_msg_id is None or message.id > self._newest_msg_id:
             self._newest_msg_id = message.id
             self._state_dirty = True
-        return n
+        return len(events)
 
-    async def ingest(self, message: discord.Message, live: bool = True) -> int:
-        """ingest_message() plus the lines of text files attached to the message."""
+    async def attachment_texts(self, message: discord.Message, diag: Diag) -> list[str]:
+        """Text of the text files attached to a message (other files are noted in `diag`)."""
         extra = []
         ts = int(message.created_at.timestamp())
         for att in message.attachments:
             name = att.filename.lower()
+            ext = name.rsplit(".", 1)[-1] if "." in name else name
             readable = name.endswith(TEXT_EXTENSIONS) or (att.content_type or "").startswith("text/")
             if not readable or att.size > ATTACHMENT_MAX_BYTES:
                 why = "too big" if readable else "not a text file"
-                self.diag.unknown_line(ts, "attachment", att.filename,
-                                       f"{name.rsplit('.', 1)[-1] if '.' in name else name} file, {why} - not read",
-                                       count_line=False)
+                diag.unknown_line(ts, "attachment", att.filename, f"{ext} file, {why} - not read", count_line=False)
                 continue
             try:
                 extra.append((await att.read()).decode("utf-8", "replace"))
-                self.diag.unknown_line(ts, "attachment", att.filename,
-                                       f"{name.rsplit('.', 1)[-1]} file - read, its lines were used", count_line=False)
+                diag.unknown_line(ts, "attachment", att.filename, f"{ext} file - read, its lines were used",
+                                  count_line=False)
             except (discord.HTTPException, discord.NotFound):
-                self.diag.unknown_line(ts, "attachment", att.filename, "file couldn't be downloaded",
-                                       count_line=False)
+                diag.unknown_line(ts, "attachment", att.filename, "file couldn't be downloaded", count_line=False)
+        return extra
+
+    async def ingest(self, message: discord.Message, live: bool = True) -> int:
+        """ingest_message() plus the lines of text files attached to the message."""
+        extra = await self.attachment_texts(message, self.diag) if message.attachments else None
         return self.ingest_message(message, live, extra)
 
     @commands.Cog.listener()
@@ -352,7 +367,7 @@ class McLogs(commands.Cog):
         await self.flush()
         unknowns = await self.db(self.store.unknowns, until_unknown)
         text = await self.db(report_text, self.store, start, end, _tz(), unknowns)
-        return text.encode("utf-8"), f"mc-log-report-{datetime.fromtimestamp(end, _tz()):%Y-%m-%d-%H%M}.txt"
+        return text.encode("utf-8"), f"mc-log-report-{datetime.fromtimestamp(end, _tz()):%Y-%m-%d-%H%M}.md"
 
     def report_recipients(self, guild: discord.Guild) -> list[discord.Member]:
         names = _report_config().get("send_to") or []
@@ -374,7 +389,7 @@ class McLogs(commands.Cog):
         if total < int(cfg.get("min_messages", 20)) or first is None or first > now - quiet:
             return False  # (almost) nothing new, or the activity started less than an hour ago
         recent, _ = await self.db(self.store.messages_between, now - quiet, now)
-        if recent > int(cfg.get("quiet_max_messages", 5)):
+        if recent > int(cfg.get("quiet_max_messages", 30)):
             return False
         channel = self.bot.get_channel(self._channel_id() or 0)
         guild = getattr(channel, "guild", None) or (self.bot.guilds[0] if self.bot.guilds else None)
@@ -804,25 +819,112 @@ class McLogs(commands.Cog):
         finally:
             self.importing = False
 
-    @group.command(name="report", description="What came in from the server and every line the bot didn't understand.")
-    @app_commands.describe(hours="How many hours back (default: since the last report, max. 24h back)")
-    async def report(self, interaction: discord.Interaction,
-                     hours: app_commands.Range[int, 1, 240] | None = None):
+    @group.command(name="report", description="What came in and every line the bot didn't understand (.md file).")
+    @app_commands.describe(period="Read the whole log chat of this time again (takes a while, file comes by DM)",
+                           days="...or any number of days to read again (instead of period)")
+    @app_commands.choices(period=[app_commands.Choice(name="Last 24 hours", value=1),
+                                  app_commands.Choice(name="Last week", value=7),
+                                  app_commands.Choice(name="Last month", value=30)])
+    async def report(self, interaction: discord.Interaction, period: app_commands.Choice[int] | None = None,
+                     days: app_commands.Range[int, 1, 365] | None = None):
         if not await self._guard(interaction):
+            return
+        if period is not None or days is not None:
+            await self.scan_report(interaction, days or period.value)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         now = int(time.time())
         oldest = now - int(float(_config().get("retention_days", 4)) * 86400)
-        if hours:
-            start = now - hours * 3600
-        else:
-            start = max(int(_state()["reported_until"] or 0) + 1, now - 86400)
-        data, filename = await self.build_report(max(start, oldest), now)
+        start = max(int(_state()["reported_until"] or 0) + 1, now - 86400, oldest)
+        data, filename = await self.build_report(start, now)
         file = discord.File(io.BytesIO(data), filename=filename)
         await interaction.followup.send(
-            "⛏️ Report - lines in the not-understood list stay until the next automatic report (sent by DM "
-            f"after {int(float(_report_config().get('quiet_minutes', 60)))} quiet minutes).",
-            file=file, ephemeral=True)
+            "⛏️ Report since the last one (from the stored data). To read the whole chat again, pick a `period` "
+            "or `days`.", file=file, ephemeral=True)
+
+    async def scan_report(self, interaction: discord.Interaction, days: int) -> None:
+        """Read the whole log channel of the last `days` days again and send the report by DM.
+        Nothing is stored - it only collects statistics and not-understood lines."""
+        channel = self.bot.get_channel(self._channel_id() or 0)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Set the log channel first: `/mclog channel`.", ephemeral=True)
+            return
+        if self.scanning:
+            await interaction.response.send_message(
+                f"A chat scan is already running ({self.scanning - 1:,} messages read so far) - wait for its file.",
+                ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"⏳ Reading the whole log chat of the last **{days} day(s)** again - this can take a while "
+            f"(about a minute per {SCAN_SPEED:,} messages). I'll keep this message updated and send you the "
+            "`.md` file **by DM** when it's done.", ephemeral=True)
+        self.scanning = 1
+        started = time.monotonic()
+        last_update = started
+        diag, players = Diag(), set(self.players)
+        after = discord.utils.utcnow() - timedelta(days=days)
+        count = retries = 0
+        problem = None
+        tz = _tz()
+        try:
+            while True:
+                try:
+                    async for message in channel.history(limit=None, after=after, oldest_first=True):
+                        count += 1
+                        self.scanning = count + 1
+                        after = discord.Object(id=message.id)
+                        if not (message.webhook_id or message.author.bot) or \
+                                message.author.id == getattr(self.bot.user, "id", 0):
+                            continue
+                        extra = await self.attachment_texts(message, diag) if message.attachments else None
+                        self.analyse(message, diag, players, extra)
+                        if count % 100 == 0:
+                            await asyncio.sleep(0)  # let the rest of the bot work in between
+                        if time.monotonic() - last_update > 20 and time.monotonic() - started < INTERACTION_MINUTES * 60:
+                            last_update = time.monotonic()
+                            try:
+                                await interaction.edit_original_response(
+                                    content=f"⏳ Reading the log chat of the last **{days} day(s)** - "
+                                            f"**{count:,} messages** so far (at "
+                                            f"{message.created_at.astimezone(tz):%d.%m. %H:%M}).")
+                            except discord.HTTPException:
+                                pass
+                    break
+                except (discord.HTTPException, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    retries += 1
+                    if retries > 5:
+                        problem = f"Discord kept failing ({exc}) - the report only covers what was read."
+                        break
+                    log.warning("Minecraft chat scan: %s - retrying in %ds", exc, 5 * retries)
+                    await asyncio.sleep(5 * retries)
+        finally:
+            self.scanning = 0
+        took = int(time.monotonic() - started)
+        now = int(time.time())
+        source = (f"whole log chat read again - {count:,} messages in {took // 60} min {took % 60} s, nothing stored"
+                  + (f". ⚠️ {problem}" if problem else ""))
+        text = await asyncio.to_thread(report_md, diag.stats(), diag.unknowns(), now - days * 86400, now, tz, source)
+        data = text.encode("utf-8")[:MAX_REPORT_BYTES].decode("utf-8", "ignore").encode("utf-8")
+        filename = f"mc-log-scan-{days}d-{datetime.fromtimestamp(now, tz):%Y-%m-%d-%H%M}.md"
+        unknown = len(diag.unknown)
+        summary = (f"✅ **Chat scan done** ({days} day(s)): {count:,} messages, "
+                   f"{diag.stats()['lines']:,} log lines, **{unknown:,} not (fully) understood thing(s)**."
+                   + (f"\n⚠️ {problem}" if problem else ""))
+        delivered = False
+        try:
+            await interaction.user.send(summary, file=discord.File(io.BytesIO(data), filename=filename))
+            delivered = True
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Couldn't DM the chat scan report to %s", interaction.user)
+        if time.monotonic() - started < INTERACTION_MINUTES * 60:
+            try:
+                await interaction.followup.send(
+                    summary + ("\nThe file is also in your DMs." if delivered else ""),
+                    file=discord.File(io.BytesIO(data), filename=filename), ephemeral=True)
+            except discord.HTTPException:
+                pass
+        log.info("Minecraft chat scan (%d days) by %s: %d messages, %d unknown, %ds", days, interaction.user,
+                 count, unknown, took)
 
     @trusted_group.command(name="add", description="Never report this Minecraft player.")
     async def trusted_add(self, interaction: discord.Interaction, name: str):

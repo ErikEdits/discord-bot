@@ -681,7 +681,7 @@ SERVER_TEMPLATE = {
         "report": {
             "enabled": True,
             "quiet_minutes": 60,
-            "quiet_max_messages": 5,    # "almost quiet" = at most this many messages in that time
+            "quiet_max_messages": 30,   # "almost quiet" = at most this many messages in that time
             "min_messages": 20,         # only report after at least this many messages since the last report
             "send_to": [],              # Discord usernames; empty = the server owner
         },

@@ -1,4 +1,23 @@
 ============================================================
+ BOT UPDATE 13 - Bericht als .md + ganzen Chat einlesen
+============================================================
+
+- Der Bericht ist jetzt eine .md-Datei (Markdown: Ueberschriften,
+  Tabellen, bis zu 3 Beispiele pro unbekannter Zeile).
+- "Ruhig" heisst jetzt: max. 30 Nachrichten in der Stunde (vorher 5).
+- /mclog report period:<Last 24 hours | Last week | Last month>
+  oder /mclog report days:<1-365>
+  liest den GANZEN Log-Chat dieser Zeit noch einmal ein (auch was
+  aelter als die 4 gespeicherten Tage ist). Der Bot laesst sich
+  dafuer Zeit (ca. 1 Minute pro 5.000 Nachrichten), zeigt den
+  Fortschritt an, macht bei Discord-Fehlern weiter, wo er war, und
+  schickt die .md-Datei per DM. Dabei wird nichts gespeichert - es
+  geht nur darum, alles Unbekannte zu finden.
+- /mclog report ohne Auswahl: schneller Bericht aus den
+  gespeicherten Daten seit dem letzten Bericht.
+
+
+============================================================
  BOT UPDATE 12 - Minecraft-Logs: Bericht + Unbekanntes
 ============================================================
 
