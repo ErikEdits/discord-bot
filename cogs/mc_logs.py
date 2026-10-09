@@ -47,7 +47,7 @@ from discord.ext import commands, tasks
 from cogs.common import DATA_DIR, get_setting, is_admin, load_json, save_json, set_setting
 from cogs.mclog_core import (Diag, Detector, LogStore, answer_question, fmt_event, fmt_pos, is_player_type,
                              known_type, parse_line, parse_question, parse_time_spec, player_summary, report_md,
-                             report_text, split_lines, summary_text, understood_text)
+                             report_text, split_lines, summary_text, understood_text, TITLE_RE)
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_logs")
@@ -60,7 +60,7 @@ ALERT_MAX_AGE = 15 * 60                   # don't alert about events older than 
 CATCH_UP_MAX_MESSAGES = 40000
 AI_CONTEXT_CHARS = 24000
 PREFERRED_MODELS = ("deepseek", "llama-3.3-70b", "llama-4", "qwen3", "gemini", "mistral-small", "gpt-oss")
-KNOWN_TITLES = {"EntityLagFix Server Log"}
+KNOWN_TITLES = {"EntityLagFix Server Log", "UptimeManager Server Log"}
 TEXT_EXTENSIONS = (".txt", ".log", ".csv", ".json", ".yml", ".yaml")
 ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
 MAX_REPORT_BYTES = 7 * 1024 * 1024        # Discord file limit for bots is 8 MB (more with boosts)
@@ -213,7 +213,7 @@ class McLogs(commands.Cog):
                      ("author", embed.author.name if embed.author else None)]
             parts += [("field", f.name) for f in embed.fields]
             for what, text in parts:
-                if text and text not in KNOWN_TITLES:
+                if text and text not in KNOWN_TITLES and not TITLE_RE.match(text):
                     diag.unknown_line(ts, "embed", text, f"{what}: {text[:120]}", count_line=False)
         texts += extra or []
         lines, other = split_lines(texts)
