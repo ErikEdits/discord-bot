@@ -1173,7 +1173,8 @@ T = {
         "understood": "Verstanden: {parts}", "u_players": "Spieler {v}", "u_all_players": "alle Spieler",
         "u_action": "Aktion {v}", "u_material": "Material {v}", "u_near": "bei x {x}, z {z}",
         "u_time": "Zeitraum {v}", "u_fuzzy": "Tippfehler erkannt: {v}",
-        "size_in": "{span_cap} kamen **{msgs} Nachrichten** mit **{lines} Log-Zeilen** an – das sind etwa "
+        "msgs_dc": "{n} Discord-Nachrichten", "msgs_cf": "{n} Cloudflare-Pakete", "msgs_and": " und ",
+        "size_in": "{span_cap} kamen **{msgs}** mit **{lines} Log-Zeilen** an – das sind etwa "
                    "**{size}** Text.",
         "size_understood": "Davon hat der Bot **{n} verstanden** ({pct} %).",
         "size_unknown": "**{n} Zeilen** hat er nicht verstanden – die stehen im Bericht (`/mclog report`).",
@@ -1183,7 +1184,7 @@ T = {
         "size_stored": "Gespeichert davon: **{stored} einzelne Einträge** und **{counted} nur gezählte** "
                        "(Mob-Spawns usw.).",
         "size_db": "Die ganze Log-Datenbank ist gerade **{db} MB** groß (Limit {max} MB, sie behält {days} Tage).",
-        "busiest_min": "Meiste Nachrichten in einer Minute: **{n}** ({h} Uhr).",
+        "busiest_min": "Meiste Discord-Nachrichten in einer Minute: **{n}** ({h} Uhr).",
         "limit_warn": "⚠️ In **{n} Minute(n)** war der Kanal am Discord-Limit (~30 Nachrichten pro Minute) – da "
                       "kann das Plugin Ereignisse verloren haben. Details: `/mclog report`.",
     },
@@ -1230,7 +1231,8 @@ T = {
         "understood": "Understood: {parts}", "u_players": "player {v}", "u_all_players": "all players",
         "u_action": "action {v}", "u_material": "material {v}", "u_near": "near x {x}, z {z}",
         "u_time": "time {v}", "u_fuzzy": "typo fixed: {v}",
-        "size_in": "{span_cap}, **{msgs} messages** with **{lines} log lines** came in – about **{size}** of text.",
+        "msgs_dc": "{n} Discord messages", "msgs_cf": "{n} Cloudflare batches", "msgs_and": " and ",
+        "size_in": "{span_cap}, **{msgs}** with **{lines} log lines** came in – about **{size}** of text.",
         "size_understood": "The bot **understood {n}** of them ({pct}%).",
         "size_unknown": "**{n} lines** weren't understood – they're in the report (`/mclog report`).",
         "size_none": "There are no message statistics for this time yet (the bot counts them since {since}).",
@@ -1239,7 +1241,7 @@ T = {
         "size_stored": "Stored from that: **{stored} single entries** and **{counted} only counted** "
                        "(mob spawns etc.).",
         "size_db": "The whole log database is **{db} MB** right now (limit {max} MB, it keeps {days} days).",
-        "busiest_min": "Most messages in one minute: **{n}** ({h}).",
+        "busiest_min": "Most Discord messages in one minute: **{n}** ({h}).",
         "limit_warn": "⚠️ In **{n} minute(s)** the channel was at Discord's limit (~30 messages per minute) – the "
                       "plugin may have lost events then. Details: `/mclog report`.",
     },
@@ -1349,7 +1351,10 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
 
     if q.intent == "size":
         if traffic["messages"]:
-            parts.append(L["size_in"].format(span_cap=span_cap, msgs=_n(traffic["messages"], q.lang),
+            dc, cf = traffic["messages"] - traffic["cf"], traffic["cf"]
+            msgs = L["msgs_and"].join(L[k].format(n=_n(v, q.lang)) for k, v in (("msgs_dc", dc), ("msgs_cf", cf))
+                                      if v or (k == "msgs_dc" and not cf))
+            parts.append(L["size_in"].format(span_cap=span_cap, msgs=msgs,
                                              lines=_n(traffic["lines"], q.lang),
                                              size=size_text(traffic["chars"], q.lang)))
             pct = round(100 * traffic["events"] / traffic["lines"]) if traffic["lines"] else 100
@@ -1358,8 +1363,9 @@ def answer_question(store: LogStore, q: Question, tz) -> tuple[str, dict | None]
             if traffic["unknown"]:
                 line += " " + L["size_unknown"].format(n=_n(traffic["unknown"], q.lang))
             parts.append(line)
-            busiest = max(traffic["rows"], key=lambda r: r[1])
-            parts.append(L["busiest_min"].format(n=busiest[1], h=hm(busiest[0])))
+            busiest = max(traffic["rows"], key=lambda r: r[1] - r[7])
+            if busiest[1] - busiest[7] > 0:   # (the Discord limit only matters for Discord messages)
+                parts.append(L["busiest_min"].format(n=busiest[1] - busiest[7], h=hm(busiest[0])))
         else:
             parts.append(L["size_none"].format(since=t(traffic["since"])) if traffic["since"] else L["size_none_new"])
         stored = store.count(**base)
