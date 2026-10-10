@@ -525,6 +525,35 @@ async def api_logs(request: Request, since: float = 0):
     return {"entries": entries, "now": time.time()}
 
 
+# -------- Routes: Minecraft logs live -------------------------------------
+
+def _mclog_cog():
+    bot = current_bot()
+    return bot.get_cog("McLogs") if bot else None
+
+
+@app.get("/mclog", response_class=HTMLResponse)
+async def mclog_live_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    # Over the Discord relay every refresh is a Discord message - refresh less often there.
+    return templates.TemplateResponse(request, "mclog_live.html", {
+        "authenticated": True,
+        "live_ms": 5000 if _relay(request) else 2000,
+        "available": _mclog_cog() is not None,
+    })
+
+
+@app.get("/api/mclog/live")
+async def api_mclog_live(request: Request, since: int = 0):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    cog = _mclog_cog()
+    if cog is None:
+        return JSONResponse({"error": "Minecraft logs are not loaded."}, status_code=503)
+    return await cog.live_snapshot(since, 200)
+
+
 # -------- Helpers for the management pages ---------------------------------
 
 def _redirect(path: str, msg: str | None = None, err: str | None = None) -> RedirectResponse:

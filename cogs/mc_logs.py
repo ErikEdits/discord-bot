@@ -11,6 +11,7 @@ and answers questions about them.
     /mclog search ...               events by player, action, material, area and time
     /mclog ask question             question in plain language (German or English)
     /mclog import hours             read older messages of the channel (max. retention)
+    /mclog live [minutes]           watch the incoming lines live (also panel page "MC Live")
     /mclog report [period|days]     what came in + every line the bot didn't understand (.md file);
                                     with a period it reads the whole log chat of that time again
     /mclog trusted add|remove|list  players never reported (default ErikEdits, ColinTK)
@@ -65,6 +66,7 @@ CF_POLL_SECONDS = 5
 CF_IDLE_AFTER = 120                       # no lines for this long -> poll only every CF_IDLE_POLL seconds
 CF_IDLE_POLL = 30
 CF_SILENT_SECONDS = 120                   # Cloudflare silent this long -> read the Discord channel again
+LIVE_KEEP = 300                           # lines kept for the live view
 DEDUP_SECONDS = 900                       # a line from Discord can be this much later than the same from Cloudflare
 OPENROUTER = "https://openrouter.ai/api/v1"
 ALERT_MAX_AGE = 15 * 60                   # don't alert about events older than this (catch-up)
@@ -183,6 +185,58 @@ class CloudflareModal(discord.ui.Modal, title="Cloudflare API token"):
         await self.cog.run_cf_setup(interaction, self.token.value, self.account.value)
 
 
+LIVE_INTERVAL = 3            # seconds between updates of /mclog live
+LIVE_ICONS = {"receiving": "🟢", "waiting": "🟡", "error": "🔴", "off": "⏸️", "discord": "💬"}
+LIVE_COLORS = {"receiving": 0x2ECC71, "waiting": 0xF1C40F, "error": 0xE74C3C, "off": 0x95A5A6, "discord": 0x5865F2}
+
+
+def _ago(ts: float | None, now: float) -> str:
+    if not ts:
+        return "never"
+    s = int(now - ts)
+    return f"{s} s ago" if s < 120 else f"{s // 60} min ago" if s < 7200 else f"{s // 3600} h ago"
+
+
+def live_embed(snap: dict, tz, until: float | None = None, stopped: bool = False) -> discord.Embed:
+    now = snap["now"]
+    embed = discord.Embed(title=("⏹️" if stopped else "🔴") + " Minecraft logs live",
+                          description=f"{LIVE_ICONS.get(snap['mode'], '')} **{snap['mode_text']}**",
+                          color=LIVE_COLORS.get(snap["mode"], 0x2ECC71))
+    embed.add_field(name="Lines / minute", value=f"{snap['lines_per_minute']:,}")
+    embed.add_field(name="Last via Cloudflare", value=_ago(snap["last_cloudflare"], now))
+    embed.add_field(name="Last via Discord", value=_ago(snap["last_discord"], now))
+    box = snap.get("mailbox") or {}
+    if box:
+        embed.add_field(name="Mailbox", value=f"online · {box.get('pending', 0)} waiting" if box.get("ok")
+                        else f"not reachable {box.get('error') or box.get('status') or ''}")
+        embed.add_field(name="Batches / minute", value=str(snap["batches_per_minute"]))
+    embed.add_field(name="Players (5 min)", value=", ".join(snap["players"])[:1024] or "-")
+    rows = []
+    for x in snap["lines"][-12:]:
+        icon = "☁" if x["src"] == "cloudflare" else "#"
+        rows.append(f"{datetime.fromtimestamp(x['ts'], tz):%H:%M:%S} {icon} {x['line'][:105]}")
+    block = "\n".join(rows) or "(nothing received yet - lines appear here as soon as they come in)"
+    embed.add_field(name="Newest lines (☁ Cloudflare, # Discord)", value=f"```{block[-1000:]}```", inline=False)
+    if stopped:
+        embed.set_footer(text="Stopped - /mclog live to watch again")
+    else:
+        embed.set_footer(text=f"Updates every {LIVE_INTERVAL} s"
+                              + (f" until {datetime.fromtimestamp(until, tz):%H:%M}" if until else "")
+                              + " · panel: page MC Live")
+    return embed
+
+
+class LiveView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.stopped = False
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.secondary, emoji="⏹️")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stopped = True
+        await interaction.response.defer()
+
+
 def cf_guide_embeds() -> list[discord.Embed]:
     embed = discord.Embed(
         title="☁️ Minecraft logs through Cloudflare - how to get the API token",
@@ -230,6 +284,10 @@ class McLogs(commands.Cog):
         self.cf_error: str | None = None
         self.cf_batches = 0
         self.discord_lines: dict[str, deque] = {}   # lines read from Discord while Cloudflare was silent
+        self.live: deque = deque(maxlen=LIVE_KEEP)   # newest received lines for /mclog live and the panel
+        self.live_seq = 0
+        self.arrivals: deque = deque()               # (arrival time, source, lines) of the last minutes
+        self.cf_pending: tuple[float, dict] = (0.0, {})   # cached mailbox /health
         self.caught_up = False
         self._models_cache: tuple[float, list] = (0, [])
         self._state_dirty = False
@@ -316,6 +374,8 @@ class McLogs(commands.Cog):
         events = self.analyse(message, self.diag, self.players, extra)
         alert = live and time.time() - ts < ALERT_MAX_AGE
         remember = _cf_settings().get("enabled") and live
+        if live:
+            self.note_live(events, "discord")
         for ev in events:
             if remember:  # Discord stands in for Cloudflare: don't count these lines again when they arrive there
                 self.discord_lines.setdefault(ev.raw, deque()).append(ts)
@@ -377,6 +437,7 @@ class McLogs(commands.Cog):
         diag.message(received // 1000, len(items), len(body), cloudflare=True)
         now = time.time()
         n = 0
+        received_events = []
         for ts, line in items:
             if "|" not in line:
                 if not TITLE_RE.match(line.strip("*` ")):
@@ -392,10 +453,70 @@ class McLogs(commands.Cog):
             if ev is None:
                 continue
             n += 1
+            received_events.append(ev)
             self.buffer.append(ev)
             for found in self.detector.feed(ev, alert=now - ts < ALERT_MAX_AGE):
                 asyncio.create_task(self.send_alert(found))
+        self.note_live(received_events, "cloudflare")
         return n
+
+    def note_live(self, events: list, source: str) -> None:
+        """Remember received lines for the live view (/mclog live, panel page "MC Live")."""
+        if not events:
+            return
+        now = time.time()
+        for ev in events:
+            self.live_seq += 1
+            self.live.append({"seq": self.live_seq, "ts": ev.ts, "recv": now, "src": source, "type": ev.type,
+                              "player": ev.player, "line": ev.raw[:300]})
+        self.arrivals.append((now, source, len(events)))
+        while self.arrivals and self.arrivals[0][0] < now - 300:
+            self.arrivals.popleft()
+
+    async def mailbox_health(self) -> dict:
+        """Mailbox /health, asked at most every 20 s."""
+        cfg = _cf_settings()
+        cached_at, data = self.cf_pending
+        if not cfg.get("url") or time.time() - cached_at < 20:
+            return data
+        if self.cf_session is None or self.cf_session.closed:
+            self.cf_session = aiohttp.ClientSession()
+        try:
+            data = await health(self.cf_session, cfg["url"])
+        except Exception as exc:
+            data = {"ok": False, "error": type(exc).__name__}
+        self.cf_pending = (time.time(), data)
+        return data
+
+    async def live_snapshot(self, since: int = 0, limit: int = 100) -> dict:
+        """Status + received lines newer than `since` (for the panel and /mclog live)."""
+        cfg = _cf_settings()
+        now = time.time()
+        if not cfg.get("url"):
+            mode, mode_text = "discord", "Discord channel (Cloudflare not set up)"
+        elif not cfg.get("enabled"):
+            mode, mode_text = "off", "Cloudflare off - reading the Discord channel"
+        elif self.cloudflare_active():
+            mode, mode_text = "receiving", "Receiving through Cloudflare"
+        elif self.cf_error:
+            mode, mode_text = "error", f"Mailbox not reachable ({self.cf_error}) - Discord channel stands in"
+        else:
+            mode, mode_text = "waiting", "Waiting for the plugin - nothing came in the last 2 minutes"
+        minute = [a for a in self.arrivals if a[0] >= now - 60]
+        last = {src: max((a[0] for a in self.arrivals if a[1] == src), default=None)
+                for src in ("cloudflare", "discord")}
+        lines = [x for x in self.live if x["seq"] > since][-limit:]
+        return {
+            "now": now, "seq": self.live_seq, "mode": mode, "mode_text": mode_text,
+            "lines_per_minute": sum(a[2] for a in minute),
+            "batches_per_minute": sum(1 for a in minute if a[1] == "cloudflare"),
+            "last_cloudflare": last["cloudflare"], "last_discord": last["discord"],
+            "last_check": self.cf_ok_at or None, "error": self.cf_error,
+            "mailbox": await self.mailbox_health() if cfg.get("url") else {},
+            "players": sorted({x["player"] for x in self.live if x["player"] and x["recv"] >= now - 300},
+                              key=str.lower),
+            "lines": lines,
+        }
 
     async def poll_cloudflare(self) -> int:
         """Pick up new batches from the mailbox. Returns the number of events."""
@@ -1090,6 +1211,31 @@ class McLogs(commands.Cog):
                 pass
         log.info("Minecraft chat scan (%d days) by %s: %d messages, %d unknown, %ds", days, interaction.user,
                  count, unknown, took)
+
+    @group.command(name="live", description="Watch the incoming Minecraft logs live (updates every 3 s).")
+    @app_commands.describe(minutes="How long to watch (1-14, default 5)")
+    async def live_cmd(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 1, 14] = 5):
+        if not await self._guard(interaction, need_store=False):
+            return
+        tz = _tz()
+        until = time.time() + minutes * 60
+        view = LiveView()
+        await interaction.response.send_message(embed=live_embed(await self.live_snapshot(), tz, until), view=view,
+                                                ephemeral=True)
+        while not view.stopped and time.time() < until:
+            await asyncio.sleep(LIVE_INTERVAL)
+            if view.stopped:
+                break
+            try:
+                await interaction.edit_original_response(embed=live_embed(await self.live_snapshot(), tz, until),
+                                                         view=view)
+            except discord.HTTPException:
+                return  # message dismissed
+        try:
+            await interaction.edit_original_response(embed=live_embed(await self.live_snapshot(), tz, stopped=True),
+                                                     view=None)
+        except discord.HTTPException:
+            pass
 
     # -------- /mclog cloudflare ---------------------------------------------
 
