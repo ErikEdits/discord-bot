@@ -33,6 +33,7 @@ nav {
     display: flex;
     align-items: center;
     gap: 18px;
+    flex-wrap: wrap;
     border-bottom: 1px solid var(--border);
 }
 
@@ -167,6 +168,8 @@ input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .dot.online { background: var(--success); }
 .dot.offline { background: var(--muted); }
+.dot.idle { background: var(--warn); }
+.dot.error { background: var(--danger); }
 
 /* Live system stat bars */
 .bar-wrap {

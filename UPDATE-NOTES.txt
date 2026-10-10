@@ -1,4 +1,22 @@
 ============================================================
+ BOT UPDATE 16 - Minecraft-Logs live ansehen
+============================================================
+
+/mclog live [minutes]   Nachricht (nur fuer dich), die sich alle 3 Sekunden
+                        selbst aktualisiert, bis zu 14 Minuten (Stop-Knopf):
+                        - kommt es ueber Cloudflare an? (gruen/gelb/rot)
+                        - Zeilen pro Minute, Pakete pro Minute
+                        - wann zuletzt ueber Cloudflare / Discord
+                        - Briefkasten online + wie viel wartet
+                        - Spieler der letzten 5 Minuten
+                        - die 12 neuesten Zeilen (☁ = Cloudflare, # = Discord)
+Panel: neue Seite "MC Live" - dasselbe als Webseite, die neuen Zeilen
+laufen live oben rein (alle 2 s, ueber den Launcher alle 5 s), mit Filter
+(Spieler / Event), Quelle (Cloudflare/Discord), Pause und Leeren. Pausiert
+automatisch, wenn der Tab nicht offen ist.
+
+
+============================================================
  BOT UPDATE 15 - Minecraft-Logs ueber Cloudflare (kein Discord-Limit)
 ============================================================
 

@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}MC Live - Bot Panel{% endblock %}
+{% block content %}
+<h1><span class="live-pulse"></span>Minecraft logs live
+    <span class="muted" style="font-size: 14px; font-weight: 400;">updates every {{ (live_ms / 1000) | int }}s</span></h1>
+{% if not available %}
+<div class="section">The Minecraft log module isn't loaded.</div>
+{% else %}
+<div class="cards">
+    <div class="card">
+        <div class="label">Source</div>
+        <div class="value" style="font-size: 16px"><span class="dot" id="mc-dot"></span><span id="mc-mode">…</span></div>
+        <div class="sub" id="mc-error"></div>
+    </div>
+    <div class="card">
+        <div class="label">Lines / minute</div>
+        <div class="value" id="mc-rate">0</div>
+        <div class="sub"><span id="mc-batches">0</span> Cloudflare batches / minute</div>
+    </div>
+    <div class="card">
+        <div class="label">Last line</div>
+        <div class="value" style="font-size: 16px">☁ <span id="mc-last-cf" data-ts="">never</span></div>
+        <div class="sub"># Discord: <span id="mc-last-dc" data-ts="">never</span></div>
+    </div>
+    <div class="card">
+        <div class="label">Mailbox</div>
+        <div class="value" style="font-size: 16px" id="mc-box">–</div>
+        <div class="sub">bot checked <span id="mc-check" data-ts="">never</span></div>
+    </div>
+    <div class="card">
+        <div class="label">Players (5 min)</div>
+        <div class="value" id="mc-player-count">0</div>
+        <div class="sub" id="mc-players">–</div>
+    </div>
+</div>
+
+<div class="section mc-controls">
+    <input type="text" id="mc-filter" placeholder="Filter, e.g. ColinTK or BLOCK_BREAK">
+    <select id="mc-source">
+        <option value="">All sources</option>
+        <option value="cloudflare">☁ Cloudflare</option>
+        <option value="discord"># Discord</option>
+    </select>
+    <button id="mc-pause" type="button">Pause</button>
+    <button id="mc-clear" type="button" class="small">Clear</button>
+    <span class="muted" id="mc-count">0 lines</span>
+</div>
+
+<div class="section" id="mc-lines">
+    <div class="empty" id="mc-empty">Nothing received yet - lines appear here as soon as the plugin sends them.</div>
+</div>
+{% endif %}
+
+<style>
+.mc-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mc-controls input { flex: 1 1 260px; width: auto; }
+.mc-controls select { flex: 0 0 160px; width: auto; }
+.mc-line { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--border);
+           font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; align-items: baseline; }
+.mc-line .t { color: var(--muted); flex: 0 0 64px; }
+.mc-line .src { flex: 0 0 18px; text-align: center; }
+.mc-line .type { flex: 0 0 auto; padding: 0 6px; border-radius: 3px; background: var(--bg-3); font-size: 11px; }
+.mc-line .txt { flex: 1; word-break: break-all; }
+.mc-line.new { animation: mcflash 1.2s ease-out; }
+@keyframes mcflash { from { background: rgba(88, 101, 242, .35); } to { background: transparent; } }
+.type-BLOCK_BREAK { color: #f0b132; } .type-BLOCK_PLACE { color: #23a55a; }
+.type-PLAYER_COMMAND, .type-CONSOLE { color: #5865f2; } .type-PLAYER_GAME_MODE_CHANGE { color: #f23f43; }
+.type-PLAYER_JOIN, .type-PLAYER_QUIT, .type-PLAYER_KICK { color: #00a8fc; }
+</style>
+<script>
+(function () {
+    const INTERVAL = {{ live_ms }};
+    const MAX_ROWS = 500;
+    const MODES = {receiving: "online", waiting: "idle", error: "error", off: "offline", discord: "online"};
+    let since = 0, paused = false, busy = false;
+    const $ = id => document.getElementById(id);
+    if (!$("mc-lines")) return;
+
+    function ago(ts) {
+        if (!ts) return "never";
+        const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+        return s < 120 ? s + " s ago" : s < 7200 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
+    }
+    function setAgo(id, ts) { const el = $(id); el.dataset.ts = ts || ""; el.textContent = ago(ts); }
+    function clock(ts) {
+        return new Date(ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false});
+    }
+
+    function visible(row) {
+        const f = $("mc-filter").value.trim().toLowerCase();
+        const src = $("mc-source").value;
+        return (!src || row.dataset.src === src) && (!f || row.dataset.text.includes(f));
+    }
+    function refilter() {
+        let n = 0;
+        document.querySelectorAll(".mc-line").forEach(r => { const v = visible(r); r.style.display = v ? "" : "none"; n += v; });
+        $("mc-count").textContent = n + " line" + (n === 1 ? "" : "s");
+    }
+
+    function addLine(x) {
+        const row = document.createElement("div");
+        row.className = "mc-line new";
+        row.dataset.src = x.src;
+        row.dataset.text = (x.line + " " + (x.player || "")).toLowerCase();
+        const parts = [["t", clock(x.ts)], ["src", x.src === "cloudflare" ? "☁" : "#"],
+                       ["type type-" + x.type, x.type], ["txt", x.line]];
+        for (const [cls, text] of parts) {
+            const span = document.createElement("span");
+            span.className = cls;
+            span.textContent = text;
+            row.appendChild(span);
+        }
+        row.style.display = visible(row) ? "" : "none";
+        const box = $("mc-lines");
+        box.insertBefore(row, box.firstChild);
+        while (box.querySelectorAll(".mc-line").length > MAX_ROWS) box.removeChild(box.lastChild);
+    }
+
+    async function tick() {
+        if (paused || busy || document.hidden) return;
+        busy = true;
+        try {
+            const res = await fetch("/api/mclog/live?since=" + since);
+            if (!res.ok) return;
+            const d = await res.json();
+            $("mc-mode").textContent = d.mode_text;
+            $("mc-dot").className = "dot " + (MODES[d.mode] || "idle");
+            $("mc-error").textContent = d.error || "";
+            $("mc-rate").textContent = d.lines_per_minute.toLocaleString();
+            $("mc-batches").textContent = d.batches_per_minute;
+            setAgo("mc-last-cf", d.last_cloudflare);
+            setAgo("mc-last-dc", d.last_discord);
+            setAgo("mc-check", d.last_check);
+            const box = d.mailbox || {};
+            $("mc-box").textContent = !Object.keys(box).length ? "not set up"
+                : box.ok ? "online · " + (box.pending || 0) + " waiting" : "not reachable";
+            $("mc-player-count").textContent = d.players.length;
+            $("mc-players").textContent = d.players.join(", ") || "–";
+            if (d.lines.length) $("mc-empty") && $("mc-empty").remove();
+            for (const x of d.lines) addLine(x);
+            since = d.seq;
+            refilter();
+        } catch (e) {
+        } finally {
+            busy = false;
+        }
+    }
+
+    $("mc-filter").addEventListener("input", refilter);
+    $("mc-source").addEventListener("change", refilter);
+    $("mc-pause").addEventListener("click", () => {
+        paused = !paused;
+        $("mc-pause").textContent = paused ? "Resume" : "Pause";
+        if (!paused) tick();
+    });
+    $("mc-clear").addEventListener("click", () => { document.querySelectorAll(".mc-line").forEach(r => r.remove()); refilter(); });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+    setInterval(() => ["mc-last-cf", "mc-last-dc", "mc-check"].forEach(id => {
+        const ts = parseFloat($(id).dataset.ts); if (ts) $(id).textContent = ago(ts);
+    }), 1000);
+    setInterval(tick, INTERVAL);
+    tick();
+})();
+</script>
+{% endblock %}
