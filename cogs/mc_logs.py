@@ -656,10 +656,11 @@ class McLogs(commands.Cog):
 
     # -------- report of what came in / wasn't understood ---------------------
 
-    async def build_report(self, start: int, end: int, until_unknown: int | None = None) -> tuple[bytes, str]:
+    async def build_report(self, start: int, end: int, until_unknown: int | None = None,
+                           source: str = "") -> tuple[bytes, str]:
         await self.flush()
         unknowns = await self.db(self.store.unknowns, until_unknown)
-        text = await self.db(report_text, self.store, start, end, _tz(), unknowns)
+        text = await self.db(report_text, self.store, start, end, _tz(), unknowns, source)
         return text.encode("utf-8"), f"mc-log-report-{datetime.fromtimestamp(end, _tz()):%Y-%m-%d-%H%M}.md"
 
     def report_recipients(self, guild: discord.Guild) -> list[discord.Member]:
@@ -1194,14 +1195,28 @@ class McLogs(commands.Cog):
             self.scanning = 0
         took = int(time.monotonic() - started)
         now = int(time.time())
-        source = (f"whole log chat read again - {count:,} messages in {took // 60} min {took % 60} s, nothing stored"
+        source = (f"Discord log chat read again - {count:,} messages in {took // 60} min {took % 60} s, nothing stored"
                   + (f". ⚠️ {problem}" if problem else ""))
         text = await asyncio.to_thread(report_md, diag.stats(), diag.unknowns(), now - days * 86400, now, tz, source)
+        stored_lines = 0
+        if _cf_settings().get("url") and self.store is not None:
+            # With Cloudflare the logs don't go through the Discord channel - add what the bot stored.
+            keep = float(_config().get("retention_days", 4))
+            start = max(now - days * 86400, int(now - keep * 86400))
+            note = ("what the bot received and stored (Cloudflare + Discord)"
+                    + (f" - only the last {keep:g} days are kept" if days > keep else ""))
+            stored, _ = await self.build_report(start, now, source=note)
+            stored_lines = (await self.db(self.store.ingest_stats, start, now))["lines"]
+            text = (text.replace("# ⛏️ Minecraft log report", "# ⛏️ Minecraft log report - Discord channel", 1)
+                    + "\n---\n\n" + stored.decode("utf-8").replace(
+                        "# ⛏️ Minecraft log report", "# ⛏️ Minecraft log report - received by the bot (Cloudflare)", 1))
         data = text.encode("utf-8")[:MAX_REPORT_BYTES].decode("utf-8", "ignore").encode("utf-8")
         filename = f"mc-log-scan-{days}d-{datetime.fromtimestamp(now, tz):%Y-%m-%d-%H%M}.md"
         unknown = len(diag.unknown)
         summary = (f"✅ **Chat scan done** ({days} day(s)): {count:,} messages, "
                    f"{diag.stats()['lines']:,} log lines, **{unknown:,} not (fully) understood thing(s)**."
+                   + (f"\n☁️ Plus {stored_lines:,} lines received through Cloudflare (2nd part of the file)."
+                      if _cf_settings().get("url") else "")
                    + (f"\n⚠️ {problem}" if problem else ""))
         delivered = False
         try:
