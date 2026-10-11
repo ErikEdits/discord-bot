@@ -72,7 +72,7 @@
     const INTERVAL = {{ live_ms }};
     const MAX_ROWS = 500;
     const MODES = {receiving: "online", waiting: "idle", error: "error", off: "offline", discord: "online"};
-    let since = 0, paused = false, busy = false;
+    let since = 0, boot = null, paused = false, busy = false;
     const $ = id => document.getElementById(id);
     if (!$("mc-lines")) return;
 
@@ -122,7 +122,13 @@
         try {
             const res = await fetch("/api/mclog/live?since=" + since);
             if (!res.ok) return;
-            const d = await res.json();
+            let d = await res.json();
+            if (boot !== null && d.boot !== boot) {   // the bot restarted: its line numbers start at 0 again
+                const again = await fetch("/api/mclog/live?since=0");
+                if (!again.ok) return;
+                d = await again.json();
+            }
+            boot = d.boot;
             $("mc-mode").textContent = d.mode_text;
             $("mc-dot").className = "dot " + (MODES[d.mode] || "idle");
             $("mc-error").textContent = d.error || "";
