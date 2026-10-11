@@ -36,6 +36,7 @@ All commands are administrator commands; the owner can unlock them with /grant.
 import asyncio
 import io
 import logging
+import secrets
 import shutil
 import time
 from collections import deque
@@ -286,6 +287,7 @@ class McLogs(commands.Cog):
         self.discord_lines: dict[str, deque] = {}   # lines read from Discord while Cloudflare was silent
         self.live: deque = deque(maxlen=LIVE_KEEP)   # newest received lines for /mclog live and the panel
         self.live_seq = 0
+        self.live_boot = secrets.token_hex(4)        # changes on every start: open panel pages start over
         self.arrivals: deque = deque()               # (arrival time, source, lines) of the last minutes
         self.cf_pending: tuple[float, dict] = (0.0, {})   # cached mailbox /health
         self.caught_up = False
@@ -490,6 +492,8 @@ class McLogs(commands.Cog):
 
     async def live_snapshot(self, since: int = 0, limit: int = 100) -> dict:
         """Status + received lines newer than `since` (for the panel and /mclog live)."""
+        if since > self.live_seq:
+            since = 0   # the page still counts from before a bot restart
         cfg = _cf_settings()
         now = time.time()
         if not cfg.get("url"):
@@ -507,7 +511,7 @@ class McLogs(commands.Cog):
                 for src in ("cloudflare", "discord")}
         lines = [x for x in self.live if x["seq"] > since][-limit:]
         return {
-            "now": now, "seq": self.live_seq, "mode": mode, "mode_text": mode_text,
+            "now": now, "seq": self.live_seq, "boot": self.live_boot, "mode": mode, "mode_text": mode_text,
             "lines_per_minute": sum(a[2] for a in minute),
             "batches_per_minute": sum(1 for a in minute if a[1] == "cloudflare"),
             "last_cloudflare": last["cloudflare"], "last_discord": last["discord"],
@@ -547,7 +551,10 @@ class McLogs(commands.Cog):
             if not batches:
                 break
             for batch in batches:
-                total += self.ingest_cf_batch(batch)
+                try:
+                    total += self.ingest_cf_batch(batch)
+                except Exception:   # one broken batch must not block everything behind it
+                    log.exception("Cloudflare mailbox: skipped broken batch %s", batch.get("id"))
             await self.flush()  # stored before telling the mailbox it may delete them
             state = _state()
             state["cf_after"] = max(int(b["id"]) for b in batches)

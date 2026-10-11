@@ -247,6 +247,8 @@ async def fetch_batches(session: aiohttp.ClientSession, url: str, bot_key: str, 
                             headers={"Authorization": f"Bearer {bot_key}"}, timeout=TIMEOUT) as r:
         if r.status == 401:
             raise PermissionError("the mailbox refused the bot key - run /mclog cloudflare setup again")
+        if r.status == 429:
+            raise RuntimeError("Cloudflare's free daily limit is used up (resets at 00:00 UTC)")
         if r.status != 200:
             raise RuntimeError(f"mailbox answered HTTP {r.status}")
         return await r.json(content_type=None)
