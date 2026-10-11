@@ -5,6 +5,10 @@ Run it (python3 open_bot_panel.py) and the bot's web panel opens in your browser
 It runs on this PC as long as this script runs and talks to the bot through
 Discord - nothing to set up, works from anywhere. Needs Python 3.8+, nothing else.
 
+Tailscale: if this PC is in a Tailscale network, the launcher asks at the start:
+1 = panel only on this PC, 2 = others in your Tailscale network may watch it too
+(read-only) at http://<your Tailscale IP>:<port>/ - send them that address.
+
 This file contains your personal panel key. Don't share it; /panel-launcher revoke
 makes it stop working. Made by /panel-launcher get (cogs/panel_launcher.py).
 """
@@ -13,9 +17,13 @@ import base64
 import email.utils
 import hashlib
 import hmac
+import ipaddress
 import json
+import os
 import secrets
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -36,8 +44,12 @@ USER_AGENT = "DiscordBot (https://github.com/ErikEdits/discord-bot, 1) PanelLaun
 ANSWER_TIMEOUT = 45
 MAX_BODY = 8 * 1024 * 1024
 
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+CHOICE_SECONDS = 10
+GUEST_BLOCKED = ("/__launcher", "/logout", "/oauth", "/login")   # (guests can only look)
+
 GATE = secrets.token_hex(24)   # browser cookie, so other websites can't use this local server
-state = {"offset": 0.0, "port": 0}
+state = {"offset": 0.0, "port": 0, "guest_port": 0, "ts_ip": None, "ts_name": None, "user": ""}
 static_cache: dict = {}
 relay_slots = threading.Semaphore(3)
 
@@ -189,7 +201,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.handle_any()
 
+    guest = False   # True on the Tailscale address: read-only, no gate cookie
+
+    def guest_hosts(self):
+        port = state["guest_port"]
+        hosts = {f"{state['ts_ip']}:{port}"}
+        if state["ts_name"]:
+            hosts |= {f"{state['ts_name']}:{port}", f"{state['ts_name'].split('.')[0]}:{port}"}
+        return hosts
+
     def handle_any(self):
+        if self.guest:
+            return self.handle_guest()
         port = state["port"]
         if self.headers.get("Host") not in (f"localhost:{port}", f"127.0.0.1:{port}"):
             return self.reply(403, "text/plain", b"Forbidden")
@@ -203,6 +226,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, "text/html; charset=utf-8",
                               page("Open the panel from the launcher",
                                    "Use the link shown in the launcher window (or restart the launcher)."))
+        self.forward()
+
+    def handle_guest(self):
+        """Someone in the Tailscale network: may look at every page, but not change anything."""
+        host = (self.headers.get("Host") or "").lower().rstrip(".")
+        if host not in {h.lower() for h in self.guest_hosts()}:
+            return self.reply(403, "text/plain", b"Forbidden")
+        if self.command not in ("GET", "HEAD"):
+            print(f"  [guest {self.client_address[0]}] {self.command} {self.path[:60]} -> blocked (read-only)")
+            return self.reply(403, "text/html; charset=utf-8",
+                              page("Read-only", "You're watching the panel read-only - changes aren't possible."))
+        if self.path.startswith(GUEST_BLOCKED):
+            return self.reply(303, headers={"Location": "/"})
+        self.forward()
+
+    def forward(self):
         if self.path == "/favicon.ico":
             return self.reply(204)
         length = int(self.headers.get("Content-Length") or 0)
@@ -220,10 +259,115 @@ class Handler(BaseHTTPRequestHandler):
         except RelayError as exc:
             print(f"  ! {self.command} {self.path}: {exc}")
             return self.reply(502, "text/html; charset=utf-8", page("Can't reach the bot", str(exc)))
-        print(f"  {self.command} {self.path[:70]} -> {status} ({time.time() - started:.1f}s)")
+        who = f"[guest {self.client_address[0]}] " if self.guest else ""
+        print(f"  {who}{self.command} {self.path[:70]} -> {status} ({time.time() - started:.1f}s)")
         if cacheable and status == 200:
             static_cache[self.path] = (ctype, data)
+        if self.guest and ctype.startswith("text/html"):
+            data = data.replace(b"<body>", b"<body>" + guest_banner(), 1)
         self.reply(status, ctype, data, {"Location": location} if location else None)
+
+
+class GuestHandler(Handler):
+    guest = True
+
+
+def guest_banner() -> bytes:
+    who = state["user"].replace("&", "&amp;").replace("<", "&lt;")
+    return ("<div style='background:#f0b132;color:#1e1f22;padding:8px 16px;font:600 14px sans-serif;"
+            f"text-align:center'>&#128064; Read-only view of the bot panel, shared by {who}</div>"
+            "<style>form[method=post],form[method=POST]{display:none!important}</style>").encode()
+
+
+# -------- Tailscale ----------------------------------------------------------
+
+def tailscale_exe():
+    found = shutil.which("tailscale")
+    for path in (r"C:\Program Files\Tailscale\tailscale.exe",
+                 "/Applications/Tailscale.app/Contents/MacOS/Tailscale"):
+        if not found and os.path.exists(path):
+            found = path
+    return found
+
+
+def tailscale_info():
+    """(IPv4, MagicDNS name) of this PC in Tailscale, or (None, None)."""
+    if os.environ.get("PANEL_LAUNCHER_TAILSCALE_IP"):
+        return os.environ["PANEL_LAUNCHER_TAILSCALE_IP"], None
+    ip = name = None
+    try:   # the route to Tailscale's own address 100.100.100.100 leaves through the Tailscale adapter
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("100.100.100.100", 53))
+        candidate = probe.getsockname()[0]
+        probe.close()
+        if ipaddress.ip_address(candidate) in TAILSCALE_NET:
+            ip = candidate
+    except (OSError, ValueError):
+        pass
+    exe = tailscale_exe()
+    if exe:
+        try:
+            out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5).stdout
+            me = json.loads(out).get("Self") or {}
+            name = (me.get("DNSName") or "").rstrip(".") or None
+            ip = ip or next((x for x in me.get("TailscaleIPs") or [] if "." in x), None)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return ip, (name if ip else None)
+
+
+def read_choice(seconds: int) -> str:
+    """'1' or '2' from the keyboard; '1' after `seconds` or without a keyboard."""
+    if os.environ.get("PANEL_LAUNCHER_MODE") in ("1", "2"):
+        return os.environ["PANEL_LAUNCHER_MODE"]
+    if not sys.stdin or not sys.stdin.isatty():
+        return "1"
+    end = time.time() + seconds
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while time.time() < end:
+                if msvcrt.kbhit():
+                    key = msvcrt.getwch()
+                    if key in "12":
+                        return key
+                    if key in "\r\n":
+                        return "1"
+                time.sleep(0.05)
+            return "1"
+        import select
+        while time.time() < end:
+            ready, _, _ = select.select([sys.stdin], [], [], end - time.time())
+            if ready:
+                key = sys.stdin.readline().strip()
+                return key if key in ("1", "2") else "1"
+    except (OSError, ValueError, ImportError):
+        pass
+    return "1"
+
+
+def ask_share(ip: str, name) -> bool:
+    print(f"  Tailscale found: {ip}" + (f" ({name})" if name else ""))
+    print("    1 = panel only on this PC")
+    print("    2 = others in your Tailscale network may watch it too (read-only)")
+    print(f"  Choose 1 or 2 (in {CHOICE_SECONDS} s it starts with 1): ", end="", flush=True)
+    choice = read_choice(CHOICE_SECONDS)
+    print(choice)
+    return choice == "2"
+
+
+def start_guest_server():
+    """Second server on the Tailscale address (same port if free)."""
+    for port in [state["port"]] + [p for p in PORTS if p != state["port"]]:
+        try:
+            server = ThreadingHTTPServer((state["ts_ip"], port), GuestHandler)
+        except OSError:
+            continue
+        server.daemon_threads = True
+        state["guest_port"] = port
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.3}, daemon=True).start()
+        return server
+    return None
 
 
 def start_server():
@@ -260,10 +404,25 @@ def main():
         reason = text.split("<p>", 1)[-1].split("</p>", 1)[0] if "<p>" in text else text[:200]
         fail(f"The bot refused the launcher: {reason.replace('<code>', '').replace('</code>', '')}")
     info = json.loads(data)
-    server = start_server()
-    url = f"http://127.0.0.1:{state['port']}/__launcher/start?t={GATE}"
+    state["user"] = str(info.get("user") or "")
     print(f"  Connected as {info.get('user')} ({info.get('server')}).\n")
-    print(f"  Panel: {url}")
+    ts_ip, ts_name = tailscale_info()
+    share = bool(ts_ip) and ask_share(ts_ip, ts_name)
+    server = start_server()
+    guest_server = None
+    if share:
+        state["ts_ip"], state["ts_name"] = ts_ip, ts_name
+        guest_server = start_guest_server()
+        if guest_server is None:
+            print(f"  ! Couldn't open the panel on {ts_ip} - only on this PC.")
+    url = f"http://127.0.0.1:{state['port']}/__launcher/start?t={GATE}"
+    print(f"\n  Panel: {url}")
+    if guest_server is not None:
+        port = state["guest_port"]
+        print(f"  For others (read-only): http://{ts_ip}:{port}/"
+              + (f"  or  http://{ts_name}:{port}/" if ts_name else ""))
+        print("    Send them this address. They need Tailscale and access to this PC in your Tailscale network.")
+        print("    If Windows asks about the firewall: allow access (private networks).")
     print("  The panel runs as long as this window is open. Close it (or press Ctrl+C) to stop.\n")
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
@@ -272,6 +431,8 @@ def main():
         pass
     finally:
         server.server_close()
+        if guest_server is not None:
+            guest_server.server_close()
 
 
 if __name__ == "__main__":

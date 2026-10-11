@@ -4,6 +4,10 @@
 # on this PC as long as the window is open and talks to the bot through Discord -
 # nothing to install or set up, works from anywhere.
 #
+# Tailscale: if this PC is in a Tailscale network, the launcher asks at the start:
+# 1 = panel only on this PC, 2 = others in your Tailscale network may watch it too
+# (read-only) at http://<your Tailscale IP>:<port>/ - send them that address.
+#
 # This file contains your personal panel key. Don't share it; /panel-launcher revoke
 # makes it stop working. Made by /panel-launcher get (cogs/panel_launcher.py).
 
@@ -21,6 +25,10 @@ $MaxBody = 8MB
 $Gate = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
 $script:TimeOffset = 0
 $script:StaticCache = @{}
+$script:Tailscale = $null      # @{ Ip; Name } when others may watch (read-only)
+$script:GuestPort = 0
+$script:UserName = ''
+$ChoiceSeconds = 10
 $Latin1 = [Text.Encoding]::GetEncoding(28591)
 $Utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
 
@@ -163,7 +171,14 @@ function Send-Response($Stream, [int]$Status, [string]$Type, [byte[]]$Body, [has
     $Stream.Flush()
 }
 
-function Invoke-Client($Client, [int]$Port) {
+function Get-GuestBanner {
+    $who = [System.Net.WebUtility]::HtmlEncode($script:UserName)
+    return "<div style='background:#f0b132;color:#1e1f22;padding:8px 16px;font:600 14px sans-serif;text-align:center'>" +
+           "&#128064; Read-only view of the bot panel, shared by $who</div>" +
+           "<style>form[method=post],form[method=POST]{display:none!important}</style>"
+}
+
+function Invoke-Client($Client, [int]$Port, [bool]$Guest) {
     $stream = $Client.GetStream()
     $stream.ReadTimeout = 15000
     $buffer = New-Object byte[] 65536
@@ -203,11 +218,35 @@ function Invoke-Client($Client, [int]$Port) {
     }
     $bodyBytes = $body.ToArray()
 
-    if (@("localhost:$Port", "127.0.0.1:$Port") -notcontains $headers['host']) {
+    $who = ''
+    if ($Guest) {
+        # Someone in the Tailscale network: may look at every page, but not change anything.
+        $who = "[guest $($Client.Client.RemoteEndPoint.Address)] "
+        $hosts = @("$($script:Tailscale.Ip):$($script:GuestPort)")
+        if ($script:Tailscale.Name) {
+            $hosts += "$($script:Tailscale.Name):$($script:GuestPort)"
+            $hosts += "$(($script:Tailscale.Name -split '\.')[0]):$($script:GuestPort)"
+        }
+        $hostHeader = ([string]$headers['host']).ToLowerInvariant().TrimEnd('.')
+        if (@($hosts | ForEach-Object { $_.ToLowerInvariant() }) -notcontains $hostHeader) {
+            Send-Response $stream 403 'text/plain' ($Utf8.GetBytes('Forbidden')) $null
+            return
+        }
+        if ($method -ne 'GET' -and $method -ne 'HEAD') {
+            Write-Host "  $who$method $path -> blocked (read-only)" -ForegroundColor Yellow
+            Send-Response $stream 403 'text/html; charset=utf-8' (New-Page 'Read-only' "You're watching the panel read-only - changes aren't possible.") $null
+            return
+        }
+        foreach ($blocked in @('/__launcher', '/logout', '/oauth', '/login')) {
+            if ($path.StartsWith($blocked)) { Send-Response $stream 303 '' $null @{ 'Location' = '/' }; return }
+        }
+    } elseif (@("localhost:$Port", "127.0.0.1:$Port") -notcontains $headers['host']) {
         Send-Response $stream 403 'text/plain' ($Utf8.GetBytes('Forbidden')) $null
         return
     }
-    if ($path.StartsWith('/__launcher/start')) {
+    if ($Guest) {
+        # (no gate cookie for guests - they can only look)
+    } elseif ($path.StartsWith('/__launcher/start')) {
         if ($path -ceq "/__launcher/start?t=$Gate") {
             Send-Response $stream 303 '' $null @{ 'Location' = '/'; 'Set-Cookie' = "panel_gate=$Gate; Path=/; HttpOnly; SameSite=Strict" }
         } else {
@@ -217,7 +256,7 @@ function Invoke-Client($Client, [int]$Port) {
     }
     $cookies = @()
     if ($headers['cookie']) { $cookies = @($headers['cookie'] -split ';' | ForEach-Object { $_.Trim() }) }
-    if ($cookies -cnotcontains "panel_gate=$Gate") {
+    if (-not $Guest -and $cookies -cnotcontains "panel_gate=$Gate") {
         Send-Response $stream 403 'text/html; charset=utf-8' (New-Page 'Open the panel from the launcher' 'Use the link shown in the launcher window (or restart the launcher).') $null
         return
     }
@@ -240,12 +279,72 @@ function Invoke-Client($Client, [int]$Port) {
     }
     $shown = $path
     if ($shown.Length -gt 70) { $shown = $shown.Substring(0, 70) }
-    Write-Host ("  {0} {1} -> {2} ({3:0.0}s)" -f $method, $shown, $answer.Status, $watch.Elapsed.TotalSeconds)
+    Write-Host ("  {0}{1} {2} -> {3} ({4:0.0}s)" -f $who, $method, $shown, $answer.Status, $watch.Elapsed.TotalSeconds)
     if ($cacheable -and $answer.Status -eq 200) { $script:StaticCache[$path] = @{ Type = $answer.Type; Body = $answer.Body } }
+    if ($Guest -and $answer.Type.StartsWith('text/html')) {
+        $html = $Utf8.GetString($answer.Body)
+        $at = $html.IndexOf('<body>')
+        if ($at -ge 0) { $answer.Body = $Utf8.GetBytes($html.Insert($at + 6, (Get-GuestBanner))) }
+    }
     $extra = $null
     if ($answer.Location) { $extra = @{ 'Location' = $answer.Location } }
     if ($method -eq 'HEAD') { $answer.Body = [byte[]]@() }
     Send-Response $stream $answer.Status $answer.Type $answer.Body $extra
+}
+
+# -------- Tailscale ------------------------------------------------------------
+
+function Get-TailscaleInfo {
+    if ($env:PANEL_LAUNCHER_TAILSCALE_IP) { return @{ Ip = $env:PANEL_LAUNCHER_TAILSCALE_IP; Name = $null } }
+    $ip = $null
+    try {
+        foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($nic.OperationalStatus -ne 'Up') { continue }
+            foreach ($unicast in $nic.GetIPProperties().UnicastAddresses) {
+                $address = $unicast.Address
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+                $b = $address.GetAddressBytes()
+                if ($b[0] -eq 100 -and ($b[1] -band 0xC0) -eq 64) {   # 100.64.0.0/10 = Tailscale addresses
+                    if (-not $ip -or $nic.Description -match 'Tailscale' -or $nic.Name -match 'Tailscale') { $ip = $address.ToString() }
+                }
+            }
+        }
+    } catch {}
+    $name = $null
+    $exe = $null
+    $cmd = Get-Command tailscale -ErrorAction SilentlyContinue
+    if ($cmd) { $exe = $cmd.Source }
+    if (-not $exe -and $env:ProgramFiles -and (Test-Path (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'))) {
+        $exe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+    }
+    if ($exe) {
+        try {
+            $status = (& $exe status --json 2>$null | Out-String) | ConvertFrom-Json
+            $name = ([string]$status.Self.DNSName).TrimEnd('.')
+            if (-not $name) { $name = $null }
+            if (-not $ip) { $ip = @($status.Self.TailscaleIPs | Where-Object { $_ -match '^\d+\.' })[0] }
+        } catch {}
+    }
+    if ($ip) { return @{ Ip = [string]$ip; Name = $name } }
+    return $null
+}
+
+# '1' or '2' from the keyboard; '1' after $Seconds or without a keyboard.
+function Read-Choice([int]$Seconds) {
+    if ($env:PANEL_LAUNCHER_MODE -eq '1' -or $env:PANEL_LAUNCHER_MODE -eq '2') { return $env:PANEL_LAUNCHER_MODE }
+    try { if ([Console]::IsInputRedirected) { return '1' } } catch { return '1' }
+    $end = [DateTime]::UtcNow.AddSeconds($Seconds)
+    try {
+        while ([DateTime]::UtcNow -lt $end) {
+            if ([Console]::KeyAvailable) {
+                $key = [string][Console]::ReadKey($true).KeyChar
+                if ($key -eq '1' -or $key -eq '2') { return $key }
+                if ($key -eq "`r" -or $key -eq "`n") { return '1' }
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    } catch {}
+    return '1'
 }
 
 function Stop-WithMessage([string]$Text) {
@@ -278,6 +377,22 @@ if ($ping.Status -ne 200) {
     Stop-WithMessage "The bot refused the launcher: $text"
 }
 $info = ConvertFrom-Json $Utf8.GetString($ping.Body)
+$script:UserName = [string]$info.user
+Write-Host "  Connected as $($info.user) ($($info.server))." -ForegroundColor Green
+Write-Host ''
+$share = $false
+$ts = Get-TailscaleInfo
+if ($ts) {
+    $label = $ts.Ip
+    if ($ts.Name) { $label = "$($ts.Ip) ($($ts.Name))" }
+    Write-Host "  Tailscale found: $label" -ForegroundColor Cyan
+    Write-Host '    1 = panel only on this PC'
+    Write-Host '    2 = others in your Tailscale network may watch it too (read-only)'
+    Write-Host "  Choose 1 or 2 (in $ChoiceSeconds s it starts with 1): " -NoNewline
+    $choice = Read-Choice $ChoiceSeconds
+    Write-Host $choice
+    $share = ($choice -eq '2')
+}
 
 $listener = $null
 $port = 0
@@ -291,10 +406,31 @@ foreach ($candidate in 8765..8799) {
 }
 if (-not $listener) { Stop-WithMessage 'No free port between 8765 and 8799.' }
 
+$guestListener = $null
+if ($share) {
+    $tsAddress = [System.Net.IPAddress]::Parse($ts.Ip)
+    foreach ($candidate in @($port) + @(8765..8799 | Where-Object { $_ -ne $port })) {
+        try {
+            $guestListener = New-Object System.Net.Sockets.TcpListener -ArgumentList @($tsAddress, $candidate)
+            $guestListener.Start()
+            $script:GuestPort = $candidate
+            $script:Tailscale = $ts
+            break
+        } catch { $guestListener = $null }
+    }
+    if (-not $guestListener) { Write-Host "  ! Couldn't open the panel on $($ts.Ip) - only on this PC." -ForegroundColor Yellow }
+}
+
 $url = "http://127.0.0.1:$port/__launcher/start?t=$Gate"
-Write-Host "  Connected as $($info.user) ($($info.server))." -ForegroundColor Green
 Write-Host ''
 Write-Host "  Panel: $url"
+if ($guestListener) {
+    $others = "http://$($ts.Ip):$($script:GuestPort)/"
+    if ($ts.Name) { $others += "  or  http://$($ts.Name):$($script:GuestPort)/" }
+    Write-Host "  For others (read-only): $others" -ForegroundColor Cyan
+    Write-Host '    Send them this address. They need Tailscale and access to this PC in your Tailscale network.'
+    Write-Host '    If Windows asks about the firewall: allow access (private networks).'
+}
 Write-Host '  The panel runs as long as this window is open. Close it (or press Ctrl+C) to stop.'
 Write-Host ''
 if (-not $env:PANEL_LAUNCHER_NO_BROWSER) { Start-Process $url }
@@ -305,7 +441,10 @@ $clients = New-Object System.Collections.ArrayList
 try {
     while ($true) {
         while ($listener.Pending()) {
-            [void]$clients.Add(@{ Client = $listener.AcceptTcpClient(); Since = [DateTime]::UtcNow })
+            [void]$clients.Add(@{ Client = $listener.AcceptTcpClient(); Since = [DateTime]::UtcNow; Guest = $false })
+        }
+        while ($guestListener -and $guestListener.Pending()) {
+            [void]$clients.Add(@{ Client = $guestListener.AcceptTcpClient(); Since = [DateTime]::UtcNow; Guest = $true })
         }
         $worked = $false
         foreach ($entry in @($clients)) {
@@ -313,7 +452,7 @@ try {
             if ($client.Available -gt 0) {
                 $clients.Remove($entry)
                 $worked = $true
-                try { Invoke-Client $client $port }
+                try { Invoke-Client $client $port $entry.Guest }
                 catch { Write-Host "  ! $($_.Exception.Message)" -ForegroundColor Yellow }
                 finally { $client.Close() }
             } elseif (([DateTime]::UtcNow - $entry.Since).TotalSeconds -gt 60 -or
@@ -326,4 +465,5 @@ try {
     }
 } finally {
     $listener.Stop()
+    if ($guestListener) { $guestListener.Stop() }
 }

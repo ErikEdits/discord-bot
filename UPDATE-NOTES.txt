@@ -1,4 +1,27 @@
 ============================================================
+ BOT UPDATE 17 - Panel-Launcher: andere per Tailscale zuschauen lassen
+============================================================
+
+Neue Launcher-Datei holen: /panel-launcher get (alte Dateien koennen das
+noch nicht).
+
+Ist dein PC in einem Tailscale-Netz, fragt der Launcher beim Start:
+  1 = Panel nur auf diesem PC
+  2 = andere in deinem Tailscale-Netz duerfen zuschauen (nur ansehen)
+Drueckst du 10 Sekunden nichts, startet er mit 1 (nur lokal).
+Bei 2 zeigt er die Adresse fuer die anderen, z.B.
+  For others (read-only): http://100.101.102.103:8765/
+Die schickst du ihnen. Sie brauchen Tailscale und Zugriff auf deinen PC
+in deinem Tailscale-Netz. Kein Passwort.
+Die anderen sehen alle Seiten (oben ein gelber Hinweis "Read-only view"),
+koennen aber nichts aendern, posten oder loeschen. Du am eigenen PC
+darfst weiter alles. Im Launcher-Fenster siehst du, wer was aufruft
+([guest 100.x.x.x] GET /stats ...).
+Windows fragt beim ersten Mal evtl. nach der Firewall -> Zugriff erlauben
+(private Netzwerke).
+
+
+============================================================
  BOT UPDATE 16 - Minecraft-Logs live ansehen
 ============================================================
 
