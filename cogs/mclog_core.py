@@ -1588,7 +1588,7 @@ def report_md(st: dict, unknowns: list[tuple], start: int, end: int, tz, source:
         out.append(f"**Source:** {source}  ")
     out.append("")
     if not st["messages"]:
-        out.append("_No log messages came in during this time._")
+        out += ["_No log messages came in during this time._", ""]
     else:
         pct = 100 * st["events"] / st["lines"] if st["lines"] else 100
         out += ["## What came in", "", "| | |", "|---|---:|",
