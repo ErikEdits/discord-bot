@@ -57,6 +57,7 @@ CHANNELS = {
     "support_vc":      "\U0001F3A7 Support Waiting Room",
     "showcase":        "\U0001F3AC-mod-showcase",
     "showcase_review": "\U0001F3AC-showcase-review",
+    "mc_chat_log":     "\U0001F4AC-mc-chat-log",
 }
 
 
@@ -695,6 +696,18 @@ SERVER_TEMPLATE = {
     "showcase": {
         "enabled": True,
         "check_minutes": 60,
+    },
+
+    # "danke @Name" gives XP; /emoji-suggest with votes + admin approval.
+    "community_extras": {
+        "thanks_xp": True,
+        "thanks_xp_amount": 30,
+    },
+
+    # Minecraft chat (PLAYER_CHAT from the plugin) in CHANNELS["mc_chat_log"], Owner role only.
+    "mc_chat_log": {
+        "enabled": True,
+        "role": "Owner",
     },
 
     # Tickets / mod-support forum: urgent tickets (crash, world broken, hacked ...), a note
