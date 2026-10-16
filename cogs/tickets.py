@@ -446,6 +446,15 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
     )
     from cogs.stats import record_event
     record_event(guild.id, "tickets_opened")
+    from cogs.push import safe_notify
+    safe_notify("ticket", f"\U0001F3AB New ticket: {type_def['label']}", f"{interaction.user} - #{ticket_channel.name}",
+                "/tickets")
+    helpers = interaction.client.get_cog("SupportHelpers")
+    if helpers is not None:   # urgent check, support-times note (cogs/support_helpers.py)
+        try:
+            await helpers.ticket_opened(ticket_channel, interaction.user, type_key, answers)
+        except Exception:
+            log.exception("Support helpers failed for %s", ticket_channel.name)
 
 
 class OpenTicketButton(discord.ui.Button):
@@ -491,6 +500,19 @@ class TicketControlsView(discord.ui.View):
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _do_claim(interaction)
 
+    @discord.ui.button(label="Transfer", style=discord.ButtonStyle.secondary,
+                       emoji="\U0001F501", custom_id="ticket:transfer")
+    async def transfer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_ticket_channel(interaction.channel):
+            await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
+            return
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can transfer tickets.", ephemeral=True)
+            return
+        view = discord.ui.View(timeout=120)
+        view.add_item(TransferSelect(interaction.message))
+        await interaction.response.send_message("Who should take over this ticket?", view=view, ephemeral=True)
+
     @discord.ui.button(label="Forward bug", style=discord.ButtonStyle.primary,
                        emoji="\U0001F4E4", custom_id="ticket:forward")
     async def forward_bug(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -511,6 +533,46 @@ class TicketControlsView(discord.ui.View):
 
 # Old ticket messages were sent with this view; keep the name working.
 CloseTicketView = TicketControlsView
+
+
+class TransferSelect(discord.ui.UserSelect):
+    """Pick the team member who takes over a ticket."""
+
+    def __init__(self, control_message: discord.Message | None):
+        super().__init__(placeholder="Pick a team member", min_values=1, max_values=1)
+        self.control_message = control_message
+
+    async def callback(self, interaction: discord.Interaction):
+        target = self.values[0]
+        member = interaction.guild.get_member(target.id) if interaction.guild else None
+        if member is None or member.bot or not _is_staff(member):
+            await interaction.response.send_message("Pick someone from the team.", ephemeral=True)
+            return
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("That's you.", ephemeral=True)
+            return
+        msg = self.control_message
+        embed = msg.embeds[0] if msg is not None and msg.embeds else None
+        if embed is not None:
+            idx = next((i for i, f in enumerate(embed.fields) if f.name == "Claimed by"), None)
+            if idx is None:
+                embed.add_field(name="Claimed by", value=member.mention, inline=False)
+            else:
+                embed.set_field_at(idx, name="Claimed by", value=member.mention, inline=False)
+            try:
+                await msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+        await interaction.response.edit_message(content=f"Transferred to {member.mention}.", view=None)
+        await interaction.channel.send(f"\U0001F501 {interaction.user.mention} handed this ticket to {member.mention}.")
+        try:
+            await member.send(f"\U0001F501 {interaction.user} handed you the ticket **{interaction.channel.name}** in "
+                              f"**{interaction.guild.name}**: {interaction.channel.jump_url}")
+        except discord.HTTPException:
+            pass
+        from cogs.stats import record_claim
+        record_claim(interaction.guild.id, member)
+        log.info("Ticket %s transferred from %s to %s", interaction.channel.name, interaction.user, member)
 
 
 async def _do_claim(interaction: discord.Interaction) -> None:

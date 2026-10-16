@@ -1154,3 +1154,152 @@ async def role_panel_change(request: Request, index: int = Form(...), action: st
             buttons[index], buttons[other] = buttons[other], buttons[index]
         return await _save_role_panel(config, "Order changed")
     return _redirect("/role-panel", err="Unknown action.")
+
+
+# -------- Routes: members (moderation from the panel / the app) -------------
+
+def _panel_actor(request: Request):
+    """Who acts in the panel: id (if known) + name, shaped like a discord user for the mod log."""
+    from types import SimpleNamespace
+    relay = _relay(request)
+    token = request.cookies.get(SESSION_COOKIE)
+    session = SESSIONS.get(token) if token else None
+    uid = (relay or {}).get("user_id") or (session or {}).get("user_id")
+    name = _panel_user(request) or "panel"
+    return SimpleNamespace(id=uid, name=name, mention=f"<@{uid}>" if uid else f"{name} (panel)")
+
+
+class _Actor:
+    def __init__(self, ns):
+        self.id, self.name, self.mention = ns.id, ns.name, ns.mention
+
+    def __str__(self):
+        return f"{self.name} (panel)"
+
+
+def _member_rows(guild: discord.Guild, q: str) -> list[dict]:
+    q = q.strip().lower().lstrip("@")
+    if not q:
+        return []
+    warns = _load_json(WARNINGS_FILE).get(str(guild.id), {})
+    modlog = _load_json(DATA_DIR / "modlog.json").get(str(guild.id), {})
+    rows = []
+    for m in guild.members:
+        if m.bot:
+            continue
+        hay = f"{m.name} {m.display_name} {m.global_name or ''} {m.id}".lower()
+        if q not in hay:
+            continue
+        rows.append({
+            "id": m.id, "name": str(m), "display": m.display_name, "avatar": m.display_avatar.replace(size=64).url,
+            "joined": m.joined_at.strftime("%Y-%m-%d") if m.joined_at else "?",
+            "created": m.created_at.strftime("%Y-%m-%d"),
+            "roles": [r.name for r in m.roles[1:]][-6:],
+            "timed_out": bool(m.timed_out_until and m.timed_out_until > datetime.now(timezone.utc)),
+            "warnings": len(warns.get(str(m.id), [])),
+            "history": [f"{e.get('timestamp', '')[:10]} {e.get('action')}: {e.get('reason', '')}"[:120]
+                        for e in modlog.get(str(m.id), [])[-5:]],
+        })
+        if len(rows) >= 25:
+            break
+    return rows
+
+
+@app.get("/members", response_class=HTMLResponse)
+async def members_page(request: Request, q: str = "", guild_id: str = ""):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    guilds = _guilds()
+    guild = _guild(guild_id) if guild_id else (guilds[0] if guilds else None)
+    return _page(request, "members.html", q=q, guild=guild, rows=_member_rows(guild, q) if guild else [])
+
+
+@app.post("/members/action")
+async def members_action(request: Request, guild_id: str = Form(...), user_id: str = Form(...),
+                         action: str = Form(...), reason: str = Form(""), duration: str = Form("1h"), q: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from urllib.parse import quote
+    back = f"/members?guild_id={guild_id}&q={quote(q)}"
+    guild = _guild(guild_id)
+    member = guild.get_member(int(user_id)) if guild and user_id.isdigit() else None
+    if member is None:
+        return _redirect(back, err="Member not found (left the server?).")
+    from cogs.common import parse_duration
+    from cogs.moderation import _ban_notice, add_warning, mod_action_embed, record_action, send_to_mod_logs
+    actor = _Actor(_panel_actor(request))
+    reason = (reason.strip() or "No reason given")[:400]
+    try:
+        if action == "warn":
+            count = add_warning(guild.id, member, actor, reason)
+            await send_to_mod_logs(guild, mod_action_embed("Member Warned", 0xF39C12, member, actor, reason,
+                                                           {"Total warnings": str(count), "Via": "panel"}))
+            try:
+                await member.send(f"You were warned in **{guild.name}**.\nReason: {reason}")
+            except discord.HTTPException:
+                pass
+            text = f"{member} warned ({count} warning(s) now)."
+        elif action == "timeout":
+            delta = parse_duration(duration)
+            if delta is None or delta.total_seconds() < 60 or delta.days > 28:
+                return _redirect(back, err="Timeout: use 10m, 1h, 1d ... (max. 28 days).")
+            await member.timeout(delta, reason=f"By {actor}: {reason}")
+            record_action(guild.id, member.id, "timeout", actor, reason, duration=duration)
+            await send_to_mod_logs(guild, mod_action_embed("Member Timed Out", 0xE67E22, member, actor, reason,
+                                                           {"Duration": duration, "Via": "panel"}))
+            text = f"{member} timed out for {duration}."
+        elif action == "untimeout":
+            await member.timeout(None, reason=f"By {actor}")
+            record_action(guild.id, member.id, "untimeout", actor, reason)
+            text = f"Timeout of {member} removed."
+        elif action == "kick":
+            await member.kick(reason=f"By {actor}: {reason}")
+            record_action(guild.id, member.id, "kick", actor, reason)
+            await send_to_mod_logs(guild, mod_action_embed("Member Kicked", 0xE67E22, member, actor, reason, {"Via": "panel"}))
+            text = f"{member} kicked."
+        elif action == "ban":
+            await _ban_notice(guild, member, reason)
+            await member.ban(reason=f"By {actor}: {reason}")
+            record_action(guild.id, member.id, "ban", actor, reason)
+            await send_to_mod_logs(guild, mod_action_embed("Member Banned", 0xC0392B, member, actor, reason, {"Via": "panel"}))
+            text = f"{member} banned."
+        else:
+            return _redirect(back, err="Unknown action.")
+    except discord.Forbidden:
+        return _redirect(back, err="The bot isn't allowed to do that (role too high or missing permission).")
+    except discord.HTTPException as exc:
+        return _redirect(back, err=f"Discord refused it: {exc.text or exc}")
+    log.info("Panel moderation by %s: %s %s", actor, action, member)
+    return _redirect(back, msg=text)
+
+
+# -------- Routes: command statistics ----------------------------------------
+
+@app.get("/command-stats", response_class=HTMLResponse)
+async def command_stats_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.command_stats import all_commands, load, summary
+    bot = current_bot()
+    stats = summary(load())
+    cmds = all_commands(bot) if bot else []
+    rows = [{"key": k, **stats.get(k, {"total": 0, "week": 0, "last": None})} for k in cmds]
+    rows += [{"key": k, **v} for k, v in stats.items() if k not in cmds and not k.startswith("button ")]
+    rows.sort(key=lambda r: (-r["total"], r["key"]))
+    buttons = sorted(({"key": k[7:], **v} for k, v in stats.items() if k.startswith("button ")),
+                     key=lambda r: -r["total"])
+    for r in rows + buttons:
+        r["last_text"] = datetime.fromtimestamp(r["last"]).strftime("%Y-%m-%d %H:%M") if r.get("last") else "-"
+    return _page(request, "command_stats.html", rows=rows, buttons=buttons,
+                 unused=sum(1 for r in rows if r["total"] == 0))
+
+
+# -------- Routes: notifications for the app ---------------------------------
+
+@app.get("/api/push/wait")
+async def push_wait(request: Request, since: int = 0, timeout: float = 20):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    from cogs import push
+    items = await push.wait(since, max(1.0, min(timeout, 20.0)))
+    return {"seq": push.seq(), "boot": push.BOOT, "items": items}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Commands - Bot Panel{% endblock %}
+{% block content %}
+<h1>Command statistics</h1>
+<div class="section">
+    <p class="muted">How often each slash command, right-click menu and button was used (last 90 days). {{ unused }} command(s) were never used.</p>
+    <table>
+        <thead><tr><th>Command</th><th>Last 7 days</th><th>Total</th><th>Last used</th></tr></thead>
+        <tbody>
+        {% for r in rows %}
+            <tr {% if r.total == 0 %}class="muted"{% endif %}>
+                <td><code>{{ r.key }}</code>{% if r.total == 0 %} <span class="pill off">never used</span>{% endif %}</td>
+                <td>{{ r.week }}</td><td>{{ r.total }}</td><td class="muted">{{ r.last_text }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+<div class="section">
+    <h3>Buttons and menus</h3>
+    {% if buttons %}
+    <table>
+        <thead><tr><th>Button (custom id)</th><th>Last 7 days</th><th>Total</th><th>Last used</th></tr></thead>
+        <tbody>
+        {% for r in buttons %}
+            <tr><td><code>{{ r.key }}</code></td><td>{{ r.week }}</td><td>{{ r.total }}</td><td class="muted">{{ r.last_text }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="empty">No button clicks counted yet.</div>{% endif %}
+</div>
+{% endblock %}

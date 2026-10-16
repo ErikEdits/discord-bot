@@ -120,6 +120,8 @@ class ErrorAlerts(commands.Cog):
             return
         self.sent_times.append(now)
         embed = self._build_embed(items)
+        from cogs.push import safe_notify
+        safe_notify("error", "\u26A0 Bot error", f"{items[0]['logger']}: {items[0]['message']}"[:300], "/logs")
         for member in self._recipients():
             try:
                 await member.send(embed=embed)

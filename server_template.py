@@ -55,6 +55,9 @@ CHANNELS = {
     "afk_vc":          "\U0001F4A4 AFK",
     "create_vc":       "\u2795 Create Voice",
     "support_vc":      "\U0001F3A7 Support Waiting Room",
+    "showcase":        "\U0001F3AC-mod-showcase",
+    "showcase_review": "\U0001F3AC-showcase-review",
+    "mc_chat_log":     "\U0001F4AC-mc-chat-log",
 }
 
 
@@ -673,6 +676,57 @@ SERVER_TEMPLATE = {
         "hour": 18,                   # local hour
         "timezone": "Europe/Berlin",
         "send_to": [],
+    },
+
+    # Insults are censored: the message is posted again with the same name/avatar, the
+    # word replaced by stars. Default list in cogs/word_filter.py; /wordfilter add/remove.
+    "word_filter": {
+        "enabled": True,
+    },
+
+    # Beta testers get a feedback form for every beta/alpha version (and /beta-feedback request);
+    # the owner gets a summary after summary_after_days.
+    "beta_feedback": {
+        "enabled": True,
+        "summary_after_days": 3,
+    },
+
+    # YouTube videos about the mods from followed channels (/showcase add) -> admin review
+    # channel (Publish / Ignore) -> public CHANNELS["showcase"].
+    "showcase": {
+        "enabled": True,
+        "check_minutes": 60,
+    },
+
+    # "danke @Name" gives XP; /emoji-suggest with votes + admin approval.
+    "community_extras": {
+        "thanks_xp": True,
+        "thanks_xp_amount": 30,
+    },
+
+    # Minecraft chat (PLAYER_CHAT from the plugin) in CHANNELS["mc_chat_log"], Owner role only.
+    "mc_chat_log": {
+        "enabled": True,
+        "role": "Owner",
+    },
+
+    # Tickets / mod-support forum: urgent tickets (crash, world broken, hacked ...), a note
+    # outside the support times, and a question for mod / MC version / loader if missing.
+    "support_helpers": {
+        "priority": True,
+        "support_times": True,
+        "version_question": True,
+        "timezone": "Europe/Berlin",
+        "hours": {"weekdays": "13:10-22:00", "weekend": "08:00-23:00"},
+    },
+
+    # Evidence (last 50 messages of banned users -> #mod-logs), appeal buttons in the ban
+    # DM, warnings when an account that looks like a banned one joins.
+    "ban_tools": {
+        "evidence": True,
+        "appeals": True,
+        "appeal_cooldown_days": 30,
+        "alt_detection": True,
     },
 
     # Right-click a message -> Apps -> "Report message": the report (text copy, attachments,

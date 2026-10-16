@@ -472,6 +472,7 @@ class McLogs(commands.Cog):
             self.live.append({"seq": self.live_seq, "ts": ev.ts, "recv": now, "src": source, "type": ev.type,
                               "player": ev.player, "line": ev.raw[:300]})
         self.arrivals.append((now, source, len(events)))
+        self.bot.dispatch("mc_events", events, source)   # e.g. cogs/mc_chat_log.py
         while self.arrivals and self.arrivals[0][0] < now - 300:
             self.arrivals.popleft()
 

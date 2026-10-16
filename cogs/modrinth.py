@@ -536,6 +536,10 @@ class Modrinth(commands.Cog):
                 except Exception:
                     log.exception("Failed to post Modrinth release")
 
+        # Other cogs react to new versions: follower DMs (mod_follow), beta feedback (beta_feedback).
+        for project, version in new_versions:
+            self.bot.dispatch("mod_release", project, version)
+
         # Follow-ups: feedback poll a few days later + refresh the compatibility table.
         try:
             from cogs.mod_info import schedule_release_feedback
