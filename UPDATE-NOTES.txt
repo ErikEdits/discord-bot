@@ -20,9 +20,16 @@ FSK-18-SERVER (wie "ava's playhouse 💦")
     - Name + Beschreibung: Woerter wie nsfw, 18+, onlyfans, leaks, porn ...
     - Emojis wie 🔞 💦 🍑 🍆 👅 🥵 (zusammen mit z.B. "playhouse", "girls")
   -> Nachricht wird geloescht, KEIN Timeout, KEIN Bann. Der Account bekommt
-  die Markierungs-Rolle "⚠ Possibly compromised" (ohne Rechte) + eine DM:
-  Account vermutlich gehackt -> Passwort aendern, 2FA, fremde Apps
-  entfernen. Steht auch in /modhistory. In den Mod-Logs gibt es den Knopf
+  die Markierungs-Rolle "⚠ Possibly compromised" (ohne Rechte) + eine DM
+  (Englisch, max. 1x pro Tag) mit:
+    - Kopie der Nachricht (Text, Kanal, Uhrzeit) + Bild der Nachricht als Beweis
+    - welcher Server beworben wurde und warum er als 18+ erkannt wurde
+    - Account sichern: Passwort aendern, 2FA, unbekannte Geraete abmelden
+    - Anleitung: fremde Apps/Bots entfernen (Authorized Apps, PC + Handy)
+    - Virenscan (Token-Stealer in "Cheats" usw.)
+    - Markierung weg: Ticket oeffnen, wenn der Account sicher ist
+    - Links zur Discord-Hilfe
+  Steht auch in /modhistory. In den Mod-Logs gibt es den Knopf
   "Remove flag", oder /unflag @Name.
   (Profilbild-Erkennung per KI kommt spaeter, wenn der Server mehr Leistung hat.)
 

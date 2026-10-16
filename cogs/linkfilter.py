@@ -19,6 +19,8 @@ Staff (Manage Messages) and bots are exempt. Every removal is logged to
 Needs the Message Content intent.
 """
 
+import asyncio
+import io
 import logging
 import re
 import secrets
@@ -60,6 +62,9 @@ _TWO_PART_TLDS = {"co", "com", "org", "net", "gov", "ac", "edu"}
 _INVITE_CACHE_SECONDS = 3600
 
 REQUESTS_FILE = DATA_DIR / "invite_requests.json"
+DM_EVERY_SECONDS = 86400
+DISCORD_HELP = "https://support.discord.com/hc/en-us/search?query=hacked%20account"
+DISCORD_SAFETY = "https://discord.com/safety"
 FLAGS_FILE = DATA_DIR / "flagged_accounts.json"
 REQUEST_DAYS = 7
 
@@ -209,6 +214,71 @@ class Unflag(discord.ui.DynamicItem[discord.ui.Button], template=r"unflag:(?P<gu
             else "That account isn't flagged (anymore).", ephemeral=True)
 
 
+async def compromised_dm(member: discord.Member, reason: str, info: dict | None,
+                         message: discord.Message | None) -> tuple[discord.Embed, list[discord.File]]:
+    """The DM for a flagged account: what was sent, why, how to secure the account, a picture as proof."""
+    guild = member.guild
+    embed = discord.Embed(
+        title="\u26A0\uFE0F Your Discord account may be compromised",
+        description=(f"A message sent from your account in **{guild.name}** was removed by the bot: it contained an "
+                     "invite to an **18+ server**. Messages like this are almost always sent by **hacked accounts** "
+                     "or by **apps/bots that have access to the account** - usually without the owner noticing.\n\n"
+                     "**You were not banned or muted.** Your account was only marked as *possibly compromised* "
+                     "so the team knows what happened."),
+        color=0xE67E22, timestamp=datetime.now(timezone.utc),
+    )
+    if message is not None:
+        text = (message.content or "*(no text)*").replace("```", "`` `")
+        embed.add_field(name="\U0001F4DD What was sent from your account",
+                        value=f"```{text[:900]}```Channel: {message.channel.mention} - "
+                              f"{discord.utils.format_dt(message.created_at, 'f')}", inline=False)
+    members = f"{info['members']:,}" if info and isinstance(info.get("members"), int) else "?"
+    if info:
+        why = reason.split(": ", 1)[-1]
+        embed.add_field(name="\U0001F51E The advertised server",
+                        value=f"**{info.get('name', '?')[:100]}** - {members} members\n"
+                              f"Detected because: {why}", inline=False)
+    embed.add_field(name="\U0001F510 1. Secure your account now", value=(
+        "- **Change your password**: User Settings \u2699\uFE0F -> My Account -> Change Password. "
+        "This also logs out stolen sessions.\n"
+        "- **Turn on two-factor authentication (2FA)** on the same page.\n"
+        "- User Settings -> **Devices**: log out every device you don't recognise."), inline=False)
+    embed.add_field(name="\U0001F916 2. Remove apps and bots that can post as you", value=(
+        "Apps you once authorized (e.g. \"verify\" bots, giveaway or Nitro sites) can send messages from your "
+        "account. Remove every app you don't know and trust:\n"
+        "- **PC / browser:** User Settings \u2699\uFE0F -> **Authorized Apps** -> click **Deauthorize** next to the app.\n"
+        "- **Phone:** tap your profile picture -> \u2699\uFE0F Settings -> **Authorized Apps** -> app -> **Deauthorize**.\n"
+        "- Also check User Settings -> **Connections** for accounts you didn't connect."), inline=False)
+    embed.add_field(name="\U0001F9A0 3. Check your PC for viruses", value=(
+        "Most hacks come from **token stealers** hidden in \"free cheats\", \"Nitro generators\", cracked games, "
+        "mods from unknown sites or files strangers send you. Run a full scan (Windows Security or Malwarebytes) "
+        "and uninstall anything suspicious. Never scan QR codes or log in on websites someone sends you."),
+        inline=False)
+    tickets = discord.utils.get(guild.text_channels, name=CHANNELS.get("tickets"))
+    where = tickets.mention if tickets else "the tickets channel"
+    embed.add_field(name="\u2705 4. Getting the mark removed", value=(
+        f"When your account is safe again, open a ticket in {where} on **{guild.name}** and the team removes "
+        "the mark. The mark has no other effect."), inline=False)
+    embed.add_field(name="\U0001F4D6 Discord help", value=f"[Hacked account help]({DISCORD_HELP}) - "
+                                                          f"[Discord Safety Center]({DISCORD_SAFETY})", inline=False)
+    files = []
+    if message is not None:
+        try:
+            from cogs.report import _download, render_message
+            avatar = await _download(member.display_avatar.replace(size=128, format="png").url, 2 * 1024 * 1024)
+            color = getattr(member, "color", None)
+            card = [f"Server invite: {info.get('name', '')}\n{members} members"] if info else []
+            png = await asyncio.to_thread(
+                render_message, member.display_name, color.to_rgb() if color and color.value else (242, 243, 245),
+                avatar, message.created_at.strftime("%d.%m.%Y %H:%M UTC"), message.content or "", card, [], None)
+            files.append(discord.File(io.BytesIO(png), filename="removed-message.png"))
+            embed.set_image(url="attachment://removed-message.png")
+            embed.set_footer(text="Picture: the removed message, as proof of what was sent from your account.")
+        except Exception:
+            log.exception("Couldn't draw the removed message")
+    return embed, files
+
+
 def _staff_roles() -> list:
     return SERVER_TEMPLATE.get("tickets", {}).get("support_role_names", ["Moderator", "Admin", "Owner"])
 
@@ -342,7 +412,7 @@ class LinkFilter(commands.Cog):
             request_sent = await self._ask_approval(message, info)
         flagged = False
         if kind == "nsfw_invite":
-            flagged = await self.flag(message.author, reason, info)
+            flagged = await self.flag(message.author, reason, info, message)
 
         if request_sent:
             notice = "{user} invites to other servers need the team's OK - I've asked them. If they approve, it shows up again."
@@ -473,13 +543,17 @@ class LinkFilter(commands.Cog):
 
     # -------- Flagging possibly compromised accounts ----------------------------
 
-    async def flag(self, member: discord.Member, reason: str, info: dict | None) -> bool:
+    async def flag(self, member: discord.Member, reason: str, info: dict | None,
+                   message: discord.Message | None = None) -> bool:
         data = load_json(FLAGS_FILE)
         g = data.setdefault(str(member.guild.id), {})
         entry = g.setdefault(str(member.id), {"count": 0})
-        first = entry["count"] == 0
+        # The DM goes out once a day at most, even if the account keeps spamming.
+        send_dm = time.time() - entry.get("last_dm", 0) > DM_EVERY_SECONDS
         entry.update(count=entry["count"] + 1, ts=time.time(), reason=reason, name=str(member),
                      server=(info or {}).get("name", ""))
+        if send_dm:
+            entry["last_dm"] = time.time()
         save_json(FLAGS_FILE, data)
         try:
             from cogs.moderation import record_action
@@ -501,19 +575,14 @@ class LinkFilter(commands.Cog):
                     await member.add_roles(role, reason="Posted an invite to an 18+ server")
                 except discord.HTTPException:
                     pass
-        if first:
+        if send_dm:
             try:
-                await member.send(
-                    f"⚠ A message from your account in **{member.guild.name}** was removed: it contained an invite "
-                    "to an 18+ server. That usually means **your account was hacked** or a bad app/bot has access.\n\n"
-                    "**Please secure your account:**\n"
-                    "1. Change your Discord password (Settings -> My Account).\n"
-                    "2. Turn on two-factor authentication (2FA).\n"
-                    "3. Settings -> Authorized Apps: remove everything you don't know.\n"
-                    "4. Don't run unknown programs (e.g. \"game cheats\") and never scan QR codes from strangers.\n\n"
-                    "Nothing else happened - you weren't banned or muted. The team was informed.")
+                embed, files = await compromised_dm(member, reason, info, message)
+                await member.send(embed=embed, files=files)
             except discord.HTTPException:
                 pass
+            except Exception:
+                log.exception("Couldn't build the compromised-account DM")
         return True
 
     async def unflag(self, guild: discord.Guild, user_id: int, by) -> bool:
