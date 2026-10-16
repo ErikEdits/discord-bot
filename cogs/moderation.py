@@ -103,6 +103,18 @@ def add_warning(guild_id: int, member, moderator, reason: str) -> int:
     return len(data[g][u])
 
 
+async def _ban_notice(guild: discord.Guild, member, reason: str, until: float | None = None) -> None:
+    """DM with the reason (+ appeal buttons from cogs/ban_tools.py) - before the ban."""
+    try:
+        from cogs.ban_tools import send_ban_notice
+        await send_ban_notice(guild, member, reason, until)
+    except ImportError:
+        try:
+            await member.send(f"You were banned from **{guild.name}**.\nReason: {reason}")
+        except discord.HTTPException:
+            pass
+
+
 def _remove_tempban(guild_id: int, user_id: int) -> None:
     data = load_json(TEMPBANS_FILE)
     if data.get(str(guild_id), {}).pop(str(user_id), None) is not None:
@@ -139,13 +151,7 @@ class Moderation(commands.Cog):
         until = time.time() + delta.total_seconds()
         pretty = format_duration(delta)
         # DM first - once banned we may no longer share a server with them.
-        try:
-            await member.send(
-                f"You were banned from **{interaction.guild.name}** for **{pretty}** "
-                f"(until <t:{int(until)}:f>).\nReason: {reason}"
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ban_notice(interaction.guild, member, reason, until)
         try:
             await member.ban(reason=f"Tempban {pretty} by {interaction.user}: {reason}",
                              delete_message_days=delete_message_days)
@@ -338,6 +344,7 @@ class Moderation(commands.Cog):
             await interaction.response.send_message("You need Ban Members permission.", ephemeral=True)
             return
         delete_message_days = max(0, min(7, delete_message_days))
+        await _ban_notice(interaction.guild, member, reason)
         try:
             await member.ban(reason=f"By {interaction.user}: {reason}", delete_message_days=delete_message_days)
         except discord.Forbidden:

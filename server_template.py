@@ -675,6 +675,21 @@ SERVER_TEMPLATE = {
         "send_to": [],
     },
 
+    # Insults are censored: the message is posted again with the same name/avatar, the
+    # word replaced by stars. Default list in cogs/word_filter.py; /wordfilter add/remove.
+    "word_filter": {
+        "enabled": True,
+    },
+
+    # Evidence (last 50 messages of banned users -> #mod-logs), appeal buttons in the ban
+    # DM, warnings when an account that looks like a banned one joins.
+    "ban_tools": {
+        "evidence": True,
+        "appeals": True,
+        "appeal_cooldown_days": 30,
+        "alt_detection": True,
+    },
+
     # Right-click a message -> Apps -> "Report message": the report (text copy, attachments,
     # a picture of the message) goes to this channel with buttons for the team.
     "report": {
