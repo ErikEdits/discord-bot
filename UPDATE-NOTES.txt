@@ -1,4 +1,40 @@
 ============================================================
+ BOT UPDATE 21 - Scam- und FSK-18-Schutz, Einladungen freigeben
+============================================================
+
+EINLADUNGEN ZU ANDEREN SERVERN
+  Werden weiter sofort geloescht (ausser vom Team). Neu: das Team (Moderator,
+  Admin, Owner) bekommt eine DM mit der Nachricht, dem Ziel-Server (Name,
+  Mitglieder, Gruendungsdatum) und den Knoepfen "Approve" / "Reject".
+  Approve -> der Bot postet die Nachricht wieder:
+      "Shared by @Name (approved by @Mod): ..."
+  (ohne Pings, auch wenn @everyone drinstand). Der Absender bekommt eine DM
+  mit dem Ergebnis. Pro Person immer nur eine offene Anfrage. Hat niemand DMs
+  offen, kommt die Anfrage in den Staff-Chat.
+  Keine Anfrage bei: @everyone/@here-Spam, abgelaufenen Einladungen und
+  FSK-18-Servern.
+
+FSK-18-SERVER (wie "ava's playhouse 💦")
+  Der Bot schaut sich den Server hinter der Einladung an:
+    - Discords eigene Altersfreigabe des Servers (18+ / explizit)
+    - Name + Beschreibung: Woerter wie nsfw, 18+, onlyfans, leaks, porn ...
+    - Emojis wie 🔞 💦 🍑 🍆 👅 🥵 (zusammen mit z.B. "playhouse", "girls")
+  -> Nachricht wird geloescht, KEIN Timeout, KEIN Bann. Der Account bekommt
+  die Markierungs-Rolle "⚠ Possibly compromised" (ohne Rechte) + eine DM:
+  Account vermutlich gehackt -> Passwort aendern, 2FA, fremde Apps
+  entfernen. Steht auch in /modhistory. In den Mod-Logs gibt es den Knopf
+  "Remove flag", oder /unflag @Name.
+  (Profilbild-Erkennung per KI kommt spaeter, wenn der Server mehr Leistung hat.)
+
+LINKS ZU ERWACHSENEN-SEITEN
+  pornhub, onlyfans, xvideos, .xxx-Domains usw. werden immer geloescht
+  (Eintrag in den Mod-Logs).
+
+Einstellungen: SERVER_TEMPLATE["link_filter"] -> invite_approval,
+block_nsfw_invites, flag_role, block_adult_links.
+
+
+============================================================
  BOT UPDATE 20 - Melden, Uebersetzen, Crash-Analyzer 2.0, Wochenbericht
 ============================================================
 

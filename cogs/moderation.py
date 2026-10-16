@@ -33,6 +33,7 @@ MAX_ACTIONS_PER_USER = 50
 ACTION_ICONS = {
     "warn": "\u26A0\uFE0F", "timeout": "\u23F3", "untimeout": "\u2705", "kick": "\U0001F462",
     "ban": "\U0001F528", "tempban": "\u231B", "unban": "\U0001F513", "clearwarnings": "\U0001F9F9",
+    "flagged": "\u2623\uFE0F", "unflagged": "\u2705",
 }
 
 

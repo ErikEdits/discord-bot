@@ -589,6 +589,14 @@ SERVER_TEMPLATE = {
         # Always removed, in addition to the built-in lookalike detection.
         "blocked_domains": [],
         "warn_message": "{user} that link isn't allowed here and was removed.",
+        # Removed invites go to the team (DM) with Approve / Reject; approved ones are posted again.
+        "invite_approval": True,
+        # Invites to 18+ servers (Discord's age rating, name/description) are removed and the poster
+        # gets this marker role ("" = no role) + a DM with tips. No timeout, no ban. /unflag removes it.
+        "block_nsfw_invites": True,
+        "flag_role": "\u26A0 Possibly compromised",
+        # Links to adult websites (pornhub, onlyfans, .xxx, ...) are always removed.
+        "block_adult_links": True,
     },
 
     # Level system. Level-ups are announced in CHANNELS["level_ups"].
