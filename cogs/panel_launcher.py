@@ -1,8 +1,8 @@
 """Panel launcher: open the web panel on your own PC, from anywhere, with no setup.
 
-    /panel-launcher get [system]   DM yourself a launcher file (administrator)
+    /panel-launcher get [system]   DM yourself a launcher file or the Android app (administrator)
     /panel-launcher status         show the relay and the active launcher files
-    /panel-launcher revoke [member] make a launcher file stop working
+    /panel-launcher revoke [member] [device]  make a launcher file / the app stop working
     /panel-launcher reset          new relay webhook, every launcher file stops working
 
 How it works
@@ -20,6 +20,12 @@ the relay webhook and a personal key. Every request is signed with that key
 (HMAC-SHA256 over key id, nonce, time, method, path, content type and body hash)
 and the key's owner must still have the Administrator permission, checked on every
 request. A key is valid until it's revoked; getting a new file replaces your old one.
+Everyone has one key for the PC (Windows/Python file) and one for the Android app
+(state["keys"]["<user id>"] and ["<user id>:android"]).
+
+Android: the app (launcher/android, built into launcher/android/BotPanel.apk by GitHub
+Actions) does the same as the launcher files. Instead of a file it gets a setup code:
+"BOTPANEL1:" + base64url(JSON {"w": webhook URL, "k": key id, "s": secret, "n": server name}).
 
 Wire format (content of the webhook message, body as attachment "body.bin"):
   request   panel-relay:1 req {"v":1,"k":key_id,"n":nonce,"t":unix,"m":"GET","p":"/x?y","c":type,"b":sha256,"s":hmac}
@@ -66,6 +72,9 @@ SYSTEMS = {
     "windows": ("panel_launcher.ps1", "Open-Bot-Panel.cmd"),
     "python": ("panel_launcher.py", "open_bot_panel.py"),
 }
+ANDROID_APK = LAUNCHER_DIR / "android" / "BotPanel.apk"
+SETUP_PREFIX = "BOTPANEL1:"
+DEVICE_NAMES = {"pc": "PC", "android": "Android"}
 
 # Batch part that starts the PowerShell script below it (the whole file is valid batch
 # *and* PowerShell: cmd skips the <# ... #> block comment's first line as a label).
@@ -94,6 +103,19 @@ def save_state(state: dict) -> None:
     save_json(STATE_FILE, state)
 
 
+def key_slot(user_id: int, system: str) -> str:
+    """Where a user's key is stored: one for the PC launcher files, one for the Android app."""
+    return f"{user_id}:android" if system == "android" else str(user_id)
+
+
+def slot_user(slot: str) -> int:
+    return int(slot.split(":", 1)[0])
+
+
+def slot_device(slot: str) -> str:
+    return "android" if slot.endswith(":android") else "pc"
+
+
 def sign(secret: bytes, k: str, n: str, t: int, m: str, p: str, c: str, b: str) -> str:
     message = "\n".join([k, n, str(t), m, p, c, b]).encode("utf-8")
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
@@ -118,6 +140,13 @@ def build_launcher(system: str, webhook_url: str, key_id: str, secret_b64: str, 
     if system == "windows":
         text = CMD_HEADER + text.replace("\r\n", "\n").replace("\n", "\r\n")
     return file_name, text.encode("utf-8")
+
+
+def build_setup_code(webhook_url: str, key_id: str, secret_b64: str, server_name: str) -> str:
+    """The code you paste into the Android app once (it holds the same as a launcher file)."""
+    data = json.dumps({"w": webhook_url, "k": key_id, "s": secret_b64, "n": server_name},
+                      separators=(",", ":")).encode("utf-8")
+    return SETUP_PREFIX + base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
 # -------- Calling the web panel in-process --------------------------------
@@ -189,7 +218,7 @@ def error_page(status: int, title: str, text: str) -> tuple[int, dict, bytes]:
 class PanelLauncher(commands.Cog):
     group = app_commands.Group(
         name="panel-launcher",
-        description="Open the web panel on your own PC from anywhere (administrator).",
+        description="Open the web panel on your PC or phone from anywhere (administrator).",
         default_permissions=discord.Permissions(administrator=True),
         guild_only=True,
     )
@@ -275,7 +304,8 @@ class PanelLauncher(commands.Cog):
         """Verify a request. Returns (key record, None) or (None, error response)."""
         state = load_state()
         key_id = str(header.get("k", ""))
-        record = next((dict(r, user_id=int(uid)) for uid, r in state["keys"].items() if r.get("key_id") == key_id), None)
+        record = next((dict(r, user_id=slot_user(slot), slot=slot) for slot, r in state["keys"].items()
+                       if r.get("key_id") == key_id), None)
         if record is None:
             return None, error_page(401, "Launcher file not valid",
                                     "This launcher file was revoked or replaced. Get a new one with "
@@ -319,7 +349,7 @@ class PanelLauncher(commands.Cog):
         guilds = _discord_admin_guilds(user_id)
         if not guilds:
             return error_page(403, "No access", "The owner of this launcher file is no longer an administrator.")
-        self._touch(user_id)
+        self._touch(record["slot"])
         member = guilds[0].get_member(user_id)
         name = member.display_name if member else record.get("name", str(user_id))
         method, target = str(header["m"]).upper(), str(header["p"])
@@ -363,9 +393,9 @@ class PanelLauncher(commands.Cog):
                      time.monotonic() - started)
             self.to_delete[message.id] = time.time() + DELETE_AFTER
 
-    def _touch(self, user_id: int) -> None:
+    def _touch(self, slot: str) -> None:
         state = load_state()
-        record = state["keys"].get(str(user_id))
+        record = state["keys"].get(slot)
         if record and time.time() - (record.get("last_used") or 0) > 60:
             record["last_used"] = int(time.time())
             save_state(state)
@@ -413,11 +443,12 @@ class PanelLauncher(commands.Cog):
 
     # -------- Commands ------------------------------------------------------
 
-    @group.command(name="get", description="DM yourself a file that opens the web panel on your PC.")
-    @app_commands.describe(system="Windows (.cmd, nothing to install) or Python (.py, any system with Python 3)")
+    @group.command(name="get", description="DM yourself a file (PC) or the app (Android) that opens the web panel.")
+    @app_commands.describe(system="Windows (.cmd), Python (.py, any system with Python 3) or Android (app for your phone)")
     @app_commands.choices(system=[
         app_commands.Choice(name="Windows", value="windows"),
         app_commands.Choice(name="Python (Mac / Linux / Windows)", value="python"),
+        app_commands.Choice(name="Android (phone app)", value="android"),
     ])
     async def get(self, interaction: discord.Interaction, system: str = "windows"):
         if not is_admin(interaction.user):
@@ -435,15 +466,20 @@ class PanelLauncher(commands.Cog):
             await interaction.followup.send(f"Couldn't set up the relay channel: {exc}", ephemeral=True)
             return
         state = load_state()
-        replaced = str(interaction.user.id) in state["keys"]
+        slot = key_slot(interaction.user.id, system)
+        replaced = slot in state["keys"]
         key_id, secret = secrets.token_hex(8), base64.b64encode(secrets.token_bytes(32)).decode()
-        state["keys"][str(interaction.user.id)] = {
+        state["keys"][slot] = {
             "key_id": key_id, "secret": secret, "name": interaction.user.display_name,
             "created": int(time.time()), "last_used": None, "system": system,
         }
         save_state(state)
-        file_name, data = build_launcher(system, f"{DISCORD_API}/webhooks/{webhook.id}/{webhook.token}",
-                                         key_id, secret, interaction.guild.name)
+        webhook_url = f"{DISCORD_API}/webhooks/{webhook.id}/{webhook.token}"
+        if system == "android":
+            await self._send_android(interaction, build_setup_code(webhook_url, key_id, secret, interaction.guild.name),
+                                     replaced)
+            return
+        file_name, data = build_launcher(system, webhook_url, key_id, secret, interaction.guild.name)
         if system == "windows":
             how = ("1. Download the file (Discord may warn about .cmd files - that's normal).\n"
                    "2. Double-click it. If Windows shows *\"Windows protected your PC\"*, click "
@@ -474,6 +510,47 @@ class PanelLauncher(commands.Cog):
                                             ephemeral=True)
         log.info("Panel launcher file (%s) created for %s", system, interaction.user)
 
+    async def _send_android(self, interaction: discord.Interaction, code: str, replaced: bool) -> None:
+        have_apk = ANDROID_APK.is_file()
+        steps = [
+            "1. Tap **BotPanel.apk** below and install it. Android asks once to allow installing apps from "
+            "Discord: **Settings -> allow from this source**, then back and **Install**. If Play Protect "
+            "warns about an unknown app: **More details -> Install anyway**.",
+            "2. Open **Bot Panel**, long-press the next message (the setup code) -> **Copy Text**, "
+            "tap **Paste** in the app and **Connect**.",
+            "3. The panel opens. The app remembers the code, so next time it opens right away.",
+        ]
+        if not have_apk:
+            steps[0] = ("1. The app isn't built yet (GitHub builds it after a bot update). Run this command "
+                        "again later to get the APK. The code below stays valid.")
+        embed = discord.Embed(
+            title="\U0001F4F1 Bot Panel app for Android",
+            description=(f"Opens the **{interaction.guild.name}** web panel on your phone - from anywhere. "
+                         "It talks to the bot through Discord, like the PC launcher.\n\n" + "\n".join(steps)),
+            color=0x5865F2,
+        )
+        embed.add_field(name="Keep it private",
+                        value="The setup code is your personal admin key for the panel. Don't share it. "
+                              "Lost your phone? `/panel-launcher revoke device:Android`.", inline=False)
+        embed.add_field(name="Updates", value="If an app update doesn't install, uninstall Bot Panel first and "
+                        "use a new setup code.", inline=False)
+        if replaced:
+            embed.add_field(name="Note", value="Your previous setup code no longer works. "
+                            "Your PC launcher file keeps working.", inline=False)
+        embed.set_footer(text="Works only while you have the Administrator permission.")
+
+        def apk():
+            return [discord.File(str(ANDROID_APK), filename="BotPanel.apk")] if have_apk else []
+        try:
+            await interaction.user.send(embed=embed, files=apk())
+            await interaction.user.send(code)
+            await interaction.followup.send("\U0001F4E8 Sent you the app and your setup code by DM.", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send("Your DMs are closed, so here it is (only you can see this):",
+                                            embed=embed, files=apk(), ephemeral=True)
+            await interaction.followup.send(code, ephemeral=True)
+        log.info("Panel launcher Android setup code created for %s", interaction.user)
+
     @group.command(name="status", description="Show the relay and the active launcher files.")
     async def status(self, interaction: discord.Interaction):
         if not is_admin(interaction.user):
@@ -486,26 +563,39 @@ class PanelLauncher(commands.Cog):
         embed.add_field(name="Relay channel", value=channel.mention if channel else "not set up yet (created by `get`)",
                         inline=False)
         lines = []
-        for uid, record in state["keys"].items():
+        for slot, record in state["keys"].items():
             used = f"<t:{record['last_used']}:R>" if record.get("last_used") else "never"
-            lines.append(f"<@{uid}> - {record.get('system', 'windows')}, created <t:{record['created']}:d>, last used {used}")
+            lines.append(f"<@{slot_user(slot)}> - {record.get('system', 'windows')}, created <t:{record['created']}:d>, "
+                         f"last used {used}")
         embed.add_field(name=f"Active launcher files ({len(lines)})", value="\n".join(lines)[:1024] or "none", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @group.command(name="revoke", description="Make a launcher file stop working (yours by default).")
-    @app_commands.describe(member="Whose launcher file to revoke (default: yours)")
-    async def revoke(self, interaction: discord.Interaction, member: discord.Member | None = None):
+    @group.command(name="revoke", description="Make a launcher file / the Android app stop working (yours by default).")
+    @app_commands.describe(member="Whose access to revoke (default: yours)",
+                           device="PC launcher file, Android app, or both (default)")
+    @app_commands.choices(device=[
+        app_commands.Choice(name="Both", value="all"),
+        app_commands.Choice(name="PC (launcher file)", value="pc"),
+        app_commands.Choice(name="Android (app)", value="android"),
+    ])
+    async def revoke(self, interaction: discord.Interaction, member: discord.Member | None = None, device: str = "all"):
         if not is_admin(interaction.user):
             await interaction.response.send_message("Administrator only.", ephemeral=True)
             return
         target = member or interaction.user
         state = load_state()
-        if state["keys"].pop(str(target.id), None) is None:
-            await interaction.response.send_message(f"{target.mention} has no launcher file.", ephemeral=True)
+        slots = [s for s in (key_slot(target.id, "pc"), key_slot(target.id, "android"))
+                 if s in state["keys"] and device in ("all", slot_device(s))]
+        if not slots:
+            what = {"all": "launcher file or app", "pc": "PC launcher file", "android": "Android app"}[device]
+            await interaction.response.send_message(f"{target.mention} has no {what}.", ephemeral=True)
             return
+        for s in slots:
+            state["keys"].pop(s)
         save_state(state)
-        log.info("Panel launcher file of %s revoked by %s", target, interaction.user)
-        await interaction.response.send_message(f"\U0001F512 The launcher file of {target.mention} no longer works.",
+        names = " and ".join(DEVICE_NAMES[slot_device(s)] for s in slots)
+        log.info("Panel launcher access (%s) of %s revoked by %s", names, target, interaction.user)
+        await interaction.response.send_message(f"\U0001F512 {target.mention}'s access ({names}) no longer works.",
                                                 ephemeral=True)
 
     @group.command(name="reset", description="New relay webhook and revoke ALL launcher files.")
@@ -524,7 +614,7 @@ class PanelLauncher(commands.Cog):
             await interaction.followup.send(f"Keys revoked, but the webhook couldn't be renewed: {exc}", ephemeral=True)
             return
         log.info("Panel launcher reset by %s (%d files revoked)", interaction.user, count)
-        await interaction.followup.send(f"\U0001F512 Relay renewed, {count} launcher file(s) revoked. "
+        await interaction.followup.send(f"\U0001F512 Relay renewed, {count} launcher file(s) / app(s) revoked. "
                                         "Get a new one with `/panel-launcher get`.", ephemeral=True)
 
 

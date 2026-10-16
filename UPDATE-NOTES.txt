@@ -1,4 +1,77 @@
 ============================================================
+ BOT UPDATE 19 - Bot-Panel als Handy-App (Android)
+============================================================
+
+/panel-launcher get system:Android
+  Der Bot schickt dir per DM:
+    - BotPanel.apk (die App)
+    - darunter eine eigene Nachricht mit deinem Setup-Code (BOTPANEL1:...)
+
+  Einrichten (einmal):
+    1. BotPanel.apk in Discord antippen -> installieren. Android fragt einmal,
+       ob Discord Apps installieren darf: Einstellungen -> "Aus dieser Quelle
+       erlauben", zurueck, Installieren. Warnt Play Protect: "Weitere
+       Details" -> "Trotzdem installieren".
+    2. App "Bot Panel" oeffnen. Die Nachricht mit dem Code lange druecken ->
+       "Text kopieren", in der App "Paste" und "Connect".
+    3. Das Panel geht auf. Die App merkt sich den Code, beim naechsten Mal
+       oeffnet sie direkt das Panel.
+
+  Die App funktioniert wie der PC-Launcher (alles laeuft ueber Discord), von
+  ueberall, mit WLAN oder mobilen Daten. Dein PC muss dafuer NICHT an sein.
+  Oben rechts im Menue: Reload und "Remove setup code".
+
+  Handy und PC haben getrennte Schluessel: ein neuer Code fuers Handy macht
+  deine PC-Launcher-Datei nicht kaputt (und umgekehrt).
+  Handy verloren? /panel-launcher revoke device:Android
+  (device: Both / PC / Android, Standard: beide)
+
+  Die APK baut GitHub automatisch (Actions), wenn sich die App aendert.
+  Klappt ein App-Update nicht: alte App deinstallieren, neu installieren und
+  einen neuen Setup-Code holen.
+
+
+============================================================
+ BOT UPDATE 18 - Sprachkanaele: Bedien-Panel, Name merken, Support-Warteraum
+============================================================
+
+Eigener Sprachkanal (➕ Create Voice):
+  Im Text-Chat deines neuen Kanals postet der Bot ein Bedien-Panel mit
+  Knoepfen. Nur der Besitzer kann sie benutzen:
+    🔒 Lock / 🔓 Unlock    nur Leute drin + erlaubte koennen rein
+    👻 Hide / 👁 Show       Kanal fuer alle anderen unsichtbar (neu)
+    ✏ Rename               Name aendern (leer lassen = Standardname)
+    👥 Limit               Personenlimit (0 = unbegrenzt)
+    ➕ Allow               bis zu 5 Leute auswaehlen, die rein duerfen
+    👢 Kick                jemanden rauswerfen - kommt nicht mehr rein
+    👑 Transfer            Kanal an jemanden im Kanal abgeben
+  Das Panel zeigt immer den aktuellen Stand (gesperrt, sichtbar, Limit,
+  Besitzer). Die /vc-Befehle gibt es weiter, neu: /vc hide und /vc show.
+  Gesperrt und unsichtbar kann man jetzt gleichzeitig benutzen, und ein
+  Kick bleibt auch nach dem Entsperren bestehen.
+
+  Name merken: Gibst du deinem Kanal einen Namen, bekommt dein naechster
+  Kanal automatisch wieder diesen Namen. Umbenennen mit leerem Feld ->
+  Standardname, nichts mehr gemerkt.
+  Discord erlaubt nur 2 Umbenennungen pro 10 Minuten - der Bot sagt dir,
+  wie lange du warten musst.
+
+Support-Warteraum (neuer Sprachkanal "🎧 Support Waiting Room"):
+  Wird beim Start automatisch unter "➕ Create Voice" erstellt. Wartende
+  koennen dort nicht reden (das Team schon).
+  Geht jemand rein, bekommt jeder mit der Rolle Moderator, Admin oder Owner
+  eine DM mit dem Knopf "Take over". Wer klickt, fuer den erstellt der Bot
+  einen privaten Sprachkanal "🎧 Support: Name" (nur die Person + Team) und
+  verschiebt die Person hinein. Bist du selbst in einem Sprachkanal, wirst
+  du mit verschoben, sonst bekommst du einen Link. Die anderen DMs zeigen
+  dann, wer es uebernommen hat. Der private Kanal verschwindet, wenn er
+  leer ist.
+  Geht die Person wieder raus, steht das in den DMs. Pro Person hoechstens
+  alle 10 Minuten neue DMs. Hat niemand DMs offen, kommt die Anfrage in den
+  Staff-Chat.
+
+
+============================================================
  BOT UPDATE 17 - Panel-Launcher: andere per Tailscale zuschauen lassen
 ============================================================
 

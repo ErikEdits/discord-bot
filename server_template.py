@@ -54,6 +54,7 @@ CHANNELS = {
     "study_vc":        "\U0001F4DA Study Hall",
     "afk_vc":          "\U0001F4A4 AFK",
     "create_vc":       "\u2795 Create Voice",
+    "support_vc":      "\U0001F3A7 Support Waiting Room",
 }
 
 
@@ -67,6 +68,22 @@ AVATAR_LOG_OVERWRITES = {
     "Owner":     {"view_channel": True, "send_messages": True,  "read_message_history": True},
 }
 
+
+# Permissions of the voice category (also the base for the support waiting room).
+VOICE_OVERWRITES = {
+    "@everyone": {"view_channel": False, "connect": False, "read_message_history": True},
+    "Member":    {"view_channel": True, "connect": True, "speak": True, "use_voice_activation": True, "stream": True, "read_message_history": True},
+    "VIP":       {"view_channel": True, "connect": True, "speak": True, "use_voice_activation": True, "stream": True, "priority_speaker": True},
+    "Moderator": {"view_channel": True, "connect": True, "speak": True, "mute_members": True, "deafen_members": True, "move_members": True},
+    "Admin":     {"view_channel": True, "connect": True, "speak": True, "mute_members": True, "deafen_members": True, "move_members": True},
+    "Owner":     {"view_channel": True, "connect": True, "speak": True},
+    "Muted":     {"speak": False, "stream": False, "send_messages": False},
+}
+SUPPORT_VC_OVERWRITES = {
+    **VOICE_OVERWRITES,
+    "Member": {**VOICE_OVERWRITES["Member"], "speak": False, "stream": False},
+    "VIP":    {**VOICE_OVERWRITES["VIP"], "speak": False, "stream": False, "priority_speaker": False},
+}
 
 SERVER_TEMPLATE = {
     "roles": [
@@ -254,17 +271,11 @@ SERVER_TEMPLATE = {
         },
         {
             "name": "\U0001F50A VOICE",
-            "overwrites": {
-                "@everyone": {"view_channel": False, "connect": False, "read_message_history": True},
-                "Member":    {"view_channel": True, "connect": True, "speak": True, "use_voice_activation": True, "stream": True, "read_message_history": True},
-                "VIP":       {"view_channel": True, "connect": True, "speak": True, "use_voice_activation": True, "stream": True, "priority_speaker": True},
-                "Moderator": {"view_channel": True, "connect": True, "speak": True, "mute_members": True, "deafen_members": True, "move_members": True},
-                "Admin":     {"view_channel": True, "connect": True, "speak": True, "mute_members": True, "deafen_members": True, "move_members": True},
-                "Owner":     {"view_channel": True, "connect": True, "speak": True},
-                "Muted":     {"speak": False, "stream": False, "send_messages": False},
-            },
+            "overwrites": VOICE_OVERWRITES,
             "channels": [
                 {"name": CHANNELS["create_vc"],  "type": "voice"},
+                # Waiting members can't talk to each other; staff can. See "support_voice".
+                {"name": CHANNELS["support_vc"], "type": "voice", "overwrites": SUPPORT_VC_OVERWRITES},
                 {"name": CHANNELS["general_vc"], "type": "voice"},
                 {"name": CHANNELS["gaming_vc"],  "type": "voice", "user_limit": 6},
                 {"name": CHANNELS["music_vc"],   "type": "voice", "user_limit": 10},
@@ -640,6 +651,16 @@ SERVER_TEMPLATE = {
         "enabled": True,
         "name_format": "\U0001F50A {user}'s channel",
         "default_limit": 0,           # 0 = unlimited
+    },
+
+    # Support waiting room: joining CHANNELS["support_vc"] sends every member with a
+    # tickets.support_role_names role a DM with a "Take over" button. Taking over
+    # creates a private voice channel (member + staff) and moves the member in.
+    # The waiting room is created automatically if it's missing.
+    "support_voice": {
+        "enabled": True,
+        "name_format": "\U0001F3A7 Support: {user}",
+        "notify_cooldown_minutes": 10,   # the same member doesn't trigger new DMs more often
     },
 
     # Minecraft server logs (EntityLagFix plugin webhook). Channel: /mclog channel.
