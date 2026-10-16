@@ -57,10 +57,11 @@ async def _safe_send(channel: discord.TextChannel | None, *, embed: discord.Embe
 
 
 def _is_temp_voice(channel) -> bool:
-    """Join-to-create channels come and go all the time - don't flood #server-logs with them."""
+    """Join-to-create and support call channels come and go all the time - don't flood #server-logs with them."""
     try:
+        from cogs.support_voice import is_support_channel
         from cogs.temp_voice import is_temp_channel
-        return is_temp_channel(channel)
+        return is_temp_channel(channel) or is_support_channel(channel)
     except Exception:
         return False
 
