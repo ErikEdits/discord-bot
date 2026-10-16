@@ -681,6 +681,16 @@ SERVER_TEMPLATE = {
         "enabled": True,
     },
 
+    # Tickets / mod-support forum: urgent tickets (crash, world broken, hacked ...), a note
+    # outside the support times, and a question for mod / MC version / loader if missing.
+    "support_helpers": {
+        "priority": True,
+        "support_times": True,
+        "version_question": True,
+        "timezone": "Europe/Berlin",
+        "hours": {"weekdays": "13:10-22:00", "weekend": "08:00-23:00"},
+    },
+
     # Evidence (last 50 messages of banned users -> #mod-logs), appeal buttons in the ban
     # DM, warnings when an account that looks like a banned one joins.
     "ban_tools": {
