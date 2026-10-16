@@ -1,4 +1,52 @@
 ============================================================
+ BOT UPDATE 20 - Melden, Uebersetzen, Crash-Analyzer 2.0, Wochenbericht
+============================================================
+
+NACHRICHT MELDEN (Rechtsklick auf eine Nachricht -> Apps -> "Report message")
+  Grund eingeben -> das Team bekommt im Staff-Chat:
+    - eine Kopie vom Text (auch aus Embeds, wo Scam-Links oft stecken)
+    - die Anhaenge (Bilder/Dateien, als Spoiler)
+    - ein Bild der Nachricht im Discord-Look (Name, Profilbild, Uhrzeit, Text)
+  -> bleibt alles da, auch wenn die Nachricht spaeter geloescht wird.
+  Knoepfe fuers Team: Nachricht loeschen / Timeout 1 h / Verwarnen / Erledigt.
+  Der Gemeldete erfaehrt nicht, wer gemeldet hat. 30 s Pause zwischen
+  Meldungen, dieselbe Nachricht nur einmal pro Person.
+  Kanal aendern: SERVER_TEMPLATE["report"]["channel"].
+
+UEBERSETZEN (Rechtsklick auf eine Nachricht -> Apps -> "Translate")
+  Nur du siehst die Uebersetzung - in deiner Discord-Sprache. Ist die
+  Nachricht schon in deiner Sprache, wird sie ins Englische uebersetzt
+  (bei englischem Discord ins Deutsche). Ueber Google Uebersetzer, kostenlos,
+  ohne Key. Antwortet Google mal nicht, sagt der Bot das.
+
+CRASH-ANALYZER 2.0
+  - Viel mehr Fehler: fehlende Library-Mods (Architectury, Cloth Config,
+    GeckoLib, Fabric API, Kotlin ...), Mod laedt nicht ("has failed to load"),
+    Absturz durch Entity/Block einer Mod, Client-Mod auf dem Server, kaputte
+    Mod-Datei, Shader-Fehler, kaputte Welt/Chunks, falsche Loader-Version,
+    Grafikspeicher voll, Sinytra Connector ...
+  - "Most likely culprit": welche Mod wirklich schuld ist, mit
+    Wahrscheinlichkeit (very likely / likely / possible) und Modrinth-Link.
+  - Deine Mods: findet der Bot deine Modrinth-Mods im Log, prueft er, ob die
+    Version zur Minecraft-Version/zum Loader passt und ob es ein Update gibt.
+  - Mehr Quellen: mclo.gs, pastebin, gist.github.com und pastes.dev Links.
+    Mehrere Dateien in einer Nachricht werden zusammen ausgewertet.
+  - Haben 3 verschiedene Leute in 7 Tagen dasselbe Problem, bekommst du eine
+    DM (mit den letzten Faellen und Loesungsvorschlag). Max. 1x pro Woche pro
+    Problem. Einstellbar: frequent_threshold, frequent_days, notify_users.
+
+WOCHENBERICHT (jeden Sonntag 18 Uhr per DM an dich)
+  Mitglieder (neu/weg, Top-Einlader), Aktivitaet (Nachrichten im Vergleich
+  zur Vorwoche, aktivster Tag, Top-Kanaele, aktivste Leute, Voice-Zeit),
+  Mods (Downloads diese Woche, Modrinth + CurseForge, Follower), Moderation
+  (Verwarnungen, Timeouts, Kicks, Bans, Meldungen), Support (Tickets,
+  Bewertungen, Crash-Analysen, haeufige Crash-Probleme), Minecraft-Server
+  (aktivste Spieler aus den Logs), Bot-Laufzeit.
+  /weekly-report preview -> schickt dir den Bericht sofort zum Anschauen.
+  Weitere Empfaenger: SERVER_TEMPLATE["weekly_report"]["send_to"].
+
+
+============================================================
  BOT UPDATE 19 - Bot-Panel als Handy-App (Android)
 ============================================================
 

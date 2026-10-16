@@ -3,7 +3,13 @@
 A panel in CHANNELS["crash_analyzer"] has an "Analyze my crash" button. Clicking
 it opens a private channel (like a ticket) in the CRASH REPORTS category. The
 user uploads latest.log / a crash report / hs_err_pid*.log there (or pastes a
-mclo.gs link) and the bot replies with what went wrong and how to fix it.
+mclo.gs / pastebin / gist / pastes.dev link) and the bot replies with what went wrong
+and how to fix it. Several files in one message are analyzed together.
+
+The answer names the most likely culprit mod, and checks the server owner's own
+Modrinth mods in the log (made for this Minecraft version/loader? newest version?).
+If the same problem comes up for `frequent_threshold` different people within
+`frequent_days` days, the owner (and `notify_users`) get a DM.
 
 Files are only read in memory and never stored. Analyzer channels are deleted
 when closed or after `auto_close_hours` without activity - no transcripts, so
@@ -16,15 +22,19 @@ Config: SERVER_TEMPLATE["crash_analyzer"]. Pause with /maintenance crash.
 import asyncio
 import gzip
 import io
+import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
+
+from urllib.parse import quote
 
 import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from cogs.common import is_staff
+from cogs.common import DATA_DIR, is_staff, load_json, save_json
 from crashlog_analyzer import analyze
 from server_template import SERVER_TEMPLATE
 
@@ -32,7 +42,14 @@ log = logging.getLogger("setup-bot.crash")
 
 TOPIC_PREFIX = "crash user "
 TEXT_EXTENSIONS = (".log", ".txt", ".gz", ".crash", ".out")
-MCLOGS_RE = re.compile(r"https?://mclo\.gs/(\w+)")
+PASTE_SOURCES = [
+    (re.compile(r"https?://mclo\.gs/(\w+)"), "mclo.gs/{}", "https://api.mclo.gs/1/raw/{}"),
+    (re.compile(r"https?://pastebin\.com/(?:raw/)?(\w{8})\b"), "pastebin.com/{}", "https://pastebin.com/raw/{}"),
+    (re.compile(r"https?://(?:api\.)?pastes\.dev/(\w+)"), "pastes.dev/{}", "https://api.pastes.dev/{}"),
+    (re.compile(r"https?://gist\.github\.com/(?:[\w\-]+/)?([0-9a-f]{20,40})"), "gist {}", "https://api.github.com/gists/{}"),
+]
+CRASH_STATS_FILE = DATA_DIR / "crash_stats.json"
+PROJECTS_CACHE_SECONDS = 1800
 MAX_DECOMPRESSED = 30 * 1024 * 1024  # guard against gzip bombs
 MAX_FILES_PER_MESSAGE = 3
 
@@ -227,7 +244,8 @@ def _decode(data: bytes, filename: str) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def build_result_embed(source: str, result: dict) -> discord.Embed:
+def build_result_embed(source: str, result: dict, own_mods: list[str] | None = None,
+                       own_title: str = "Mods from this server") -> discord.Embed:
     findings = result["findings"]
     info = result["info"]
     top = max((f.severity for f in findings), default=0)
@@ -270,33 +288,59 @@ def build_result_embed(source: str, result: dict) -> discord.Embed:
 
     if result.get("root_error"):
         embed.add_field(name="Error", value=f"```{result['root_error'][:300]}```", inline=False)
-    if result.get("stack_mods"):
+    if result.get("suspects"):
+        icons = {"very likely": "\U0001F534", "likely": "\U0001F7E0", "possible": "\U0001F7E1"}
+        lines = [f"{icons.get(s['likelihood'], '')} **{s['mod']}** - {s['likelihood']} ({s['why']}) - "
+                 f"[Modrinth](https://modrinth.com/mods?q={quote(s['mod'])})" for s in result["suspects"]]
+        embed.add_field(name="Most likely culprit", value="\n".join(lines)[:1024], inline=False)
+    elif result.get("stack_mods"):
         embed.add_field(
             name="Mods in the stack trace",
             value=", ".join(f"`{m}`" for m in result["stack_mods"]) + "\n(often, but not always, the culprit)",
             inline=False,
         )
+    if own_mods:
+        embed.add_field(name=f"\U0001F9E9 {own_title}", value="\n".join(own_mods)[:1024], inline=False)
     embed.set_footer(text="Automatic analysis - it can be wrong. Still stuck? Open a ticket.")
     return embed
 
 
-async def _fetch_mclogs(log_id: str) -> str | None:
-    url = f"https://api.mclo.gs/1/raw/{log_id}"
+async def _fetch_paste(url: str) -> str | None:
+    """Raw text of a paste link (mclo.gs, pastebin, pastes.dev, GitHub gist)."""
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers={"User-Agent": "ErikEdits-Discord-Bot crash analyzer"}) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 if r.status != 200:
                     return None
                 data = await r.content.read(MAX_DECOMPRESSED)
+            if "api.github.com/gists/" not in url:
                 return data.decode("utf-8", errors="replace")
+            parts = []
+            for f in (json.loads(data).get("files") or {}).values():
+                content = f.get("content") or ""
+                if f.get("truncated") and f.get("raw_url"):
+                    async with session.get(f["raw_url"], timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        content = (await r.content.read(MAX_DECOMPRESSED)).decode("utf-8", errors="replace")
+                parts.append(f"===== {f.get('filename', 'file')} =====\n{content}")
+            return "\n\n".join(parts) or None
     except Exception:
-        log.exception("mclo.gs fetch failed")
+        log.warning("Couldn't load paste %s", url)
         return None
+
+
+def _version_matches(installed: str, latest: str) -> bool:
+    a, b = installed.lower().lstrip("v"), latest.lower().lstrip("v")
+    return a == b or b in a or a in b
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 class CrashAnalyzer(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._projects: tuple[float, list] = (0.0, [])
         bot.add_view(CrashPanelView())
         bot.add_view(CrashChannelView())
         if _config().get("auto_close_hours"):
@@ -338,12 +382,17 @@ class CrashAnalyzer(commands.Cog):
                 continue
             jobs.append((name, text))
 
-        for log_id in MCLOGS_RE.findall(message.content or "")[:2]:
-            text = await _fetch_mclogs(log_id)
-            if text:
-                jobs.append((f"mclo.gs/{log_id}", text))
-            else:
-                skipped.append(f"mclo.gs/{log_id} (couldn't load it)")
+        links = 0
+        for pattern, label, url in PASTE_SOURCES:
+            for paste_id in pattern.findall(message.content or ""):
+                if links >= 3:
+                    break
+                links += 1
+                text = await _fetch_paste(url.format(paste_id))
+                if text:
+                    jobs.append((label.format(paste_id), text))
+                else:
+                    skipped.append(f"{label.format(paste_id)} (couldn't load it)")
 
         if not jobs and not skipped:
             if not self.bot.intents.message_content:
@@ -351,20 +400,156 @@ class CrashAnalyzer(commands.Cog):
             return
 
         async with message.channel.typing():
-            for source, text in jobs:
+            if jobs:
+                # Several files (crash report + latest.log) are analyzed together.
+                source = " + ".join(name for name, _ in jobs)
+                text = jobs[0][1] if len(jobs) == 1 else "\n\n".join(f"===== {n} =====\n{t}" for n, t in jobs)
                 # Regex work on a multi-MB log can take a moment - keep the event loop free.
                 result = await asyncio.to_thread(analyze, text)
-                embed = build_result_embed(source, result)
+                own_lines, own_keys = await self.own_mod_check(result)
+                embed = build_result_embed(source, result, own_lines, self._own_title())
                 try:
                     await message.reply(embed=embed, view=CrashChannelView(), mention_author=False)
                 except discord.HTTPException:
                     log.exception("Failed to send crash analysis")
                 log.info("Analyzed %s for %s: %d finding(s)", source, message.author, len(result["findings"]))
+                try:
+                    from cogs.stats import record_event
+                    record_event(message.guild.id, "crash_analyses")
+                except Exception:
+                    pass
+                await self.track(message.guild, message.author, result, own_keys)
         if skipped:
             try:
                 await message.reply("Skipped: " + ", ".join(skipped), mention_author=False)
             except discord.HTTPException:
                 pass
+
+    # -------- The owner's own mods ------------------------------------------
+
+    @staticmethod
+    def _own_title() -> str:
+        name = SERVER_TEMPLATE.get("modrinth", {}).get("username") or ""
+        return f"{name}'s mods" if name else "Mods from this server"
+
+    async def _own_projects(self) -> list:
+        username = SERVER_TEMPLATE.get("modrinth", {}).get("username")
+        if not username:
+            return []
+        if time.monotonic() - self._projects[0] < PROJECTS_CACHE_SECONDS and self._projects[1]:
+            return self._projects[1]
+        from cogs.modrinth import _fetch_user_projects
+        projects = await _fetch_user_projects(username) or []
+        if projects:
+            self._projects = (time.monotonic(), projects)
+        return projects or self._projects[1]
+
+    async def own_mod_check(self, result: dict) -> tuple[list[str], list[str]]:
+        """Lines for the embed + keys of problems (old version / wrong MC version) for tracking."""
+        installed = result.get("mods") or {}
+        if not installed:
+            return [], []
+        try:
+            projects = await self._own_projects()
+        except Exception:
+            log.exception("Couldn't load the own Modrinth projects")
+            return [], []
+        by_norm = {_norm(mod_id): (mod_id, ver) for mod_id, ver in installed.items()}
+        mc = result["info"].get("minecraft")
+        loader = (result["info"].get("loader") or "").lower()
+        lines, keys = [], []
+        from cogs.modrinth import _latest_matching_version
+        async with aiohttp.ClientSession() as session:
+            for p in projects:
+                names = {_norm(p.get("slug") or ""), _norm(p.get("title") or "")} - {""}
+                hit = next((by_norm[n] for n in names if n in by_norm), None)
+                if hit is None:
+                    continue
+                title, slug, ver = p.get("title") or hit[0], p.get("slug") or p.get("id"), hit[1]
+                url = f"https://modrinth.com/mod/{slug}"
+                if mc and p.get("game_versions") and mc not in p["game_versions"]:
+                    lines.append(f"\u274C **{title}** `{ver}` isn't made for Minecraft {mc} - [versions]({url}/versions)")
+                    keys.append(f"own:{slug}:mc")
+                    continue
+                if loader and p.get("loaders") and loader not in p["loaders"]:
+                    lines.append(f"\u274C **{title}** has no version for {result['info'].get('loader')} - [versions]({url}/versions)")
+                    keys.append(f"own:{slug}:loader")
+                    continue
+                latest = None
+                if mc and loader:
+                    try:
+                        latest = await _latest_matching_version(session, p["id"], mc, loader)
+                    except Exception:
+                        latest = None
+                if latest and not _version_matches(ver, latest.get("version_number", "")):
+                    lines.append(f"\u2B06 **{title}**: installed `{ver}`, newest for {mc}: "
+                                 f"`{latest['version_number']}` - [update]({url}/version/{latest.get('id', '')})")
+                    keys.append(f"own:{slug}:old")
+                else:
+                    lines.append(f"\u2705 **{title}** `{ver}`" + (" is up to date" if latest else ""))
+        return lines, keys
+
+    # -------- Problems many people have -------------------------------------
+
+    async def track(self, guild: discord.Guild, user: discord.abc.User, result: dict, own_keys: list[str]) -> None:
+        days = float(_config().get("frequent_days", 7))
+        threshold = int(_config().get("frequent_threshold", 3))
+        if threshold <= 0:
+            return
+        now = time.time()
+        error = (result.get("root_error") or "")[:150]
+        problems = {}   # key -> (label, fix)
+        for f in result["findings"]:
+            if f.severity >= 2:
+                problems[f.key or f.title] = (f.title + (f" ({f.key.split(':', 1)[1]})" if ":" in f.key else ""), f.fix)
+        for sus in result.get("suspects") or []:
+            if sus["likelihood"] == "very likely":
+                problems[f"mod:{_norm(sus['mod'])}"] = (f"Crashes caused by **{sus['mod']}**",
+                                                        f"Check the newest version of {sus['mod']} and known issues.")
+        for key in own_keys:
+            slug, kind = key.split(":")[1:3]
+            label = {"old": "people use an old version", "mc": "used on a Minecraft version it doesn't support",
+                     "loader": "used on a loader it doesn't support"}[kind]
+            problems[key] = (f"**{slug}**: {label}", "Maybe mention it in the mod description / announcements.")
+        if not problems:
+            return
+        data = load_json(CRASH_STATS_FILE)
+        sigs = data.setdefault("problems", {})
+        notify = []
+        for key, (label, fix) in problems.items():
+            entry = sigs.setdefault(key, {"events": [], "notified": 0})
+            entry.update(label=label, fix=fix)
+            entry["events"] = [e for e in entry["events"] if now - e[0] < days * 86400] + [[now, user.id, error]]
+            people = {e[1] for e in entry["events"]}
+            if len(people) >= threshold and now - entry.get("notified", 0) > days * 86400:
+                entry["notified"] = now
+                notify.append((key, entry, len(people)))
+        for key in [k for k, e in sigs.items() if not e["events"] or now - e["events"][-1][0] > days * 86400]:
+            sigs.pop(key)
+        save_json(CRASH_STATS_FILE, data)
+        for key, entry, count in notify:
+            await self._notify_frequent(guild, entry, count, days)
+
+    async def _notify_frequent(self, guild: discord.Guild, entry: dict, count: int, days: float) -> None:
+        embed = discord.Embed(
+            title="\U0001F501 Crash problem seen often",
+            description=f"{entry['label']}\n\n**{count} different people** had this in the last {days:g} days.",
+            color=0xE67E22,
+        )
+        embed.add_field(name="Suggested fix", value=entry["fix"][:1024], inline=False)
+        examples = [f"<@{uid}> <t:{int(ts)}:R>" + (f" - `{err[:90]}`" if err else "")
+                    for ts, uid, err in entry["events"][-5:]]
+        embed.add_field(name="Latest cases", value="\n".join(examples)[:1024], inline=False)
+        embed.set_footer(text=f"Crash analyzer - {guild.name}")
+        recipients = {guild.owner} if guild.owner else set()
+        wanted = {n.lower() for n in _config().get("notify_users", [])}
+        recipients |= {m for m in guild.members if m.name.lower() in wanted}
+        for person in recipients:
+            try:
+                await person.send(embed=embed)
+            except discord.HTTPException:
+                pass
+        log.info("Frequent crash problem reported: %s (%d people)", entry["label"], count)
 
     @tasks.loop(minutes=30)
     async def cleanup_loop(self):

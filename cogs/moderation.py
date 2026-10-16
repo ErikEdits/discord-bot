@@ -87,6 +87,21 @@ def mod_action_embed(title: str, color: int, member, moderator, reason: str, ext
     return embed
 
 
+def add_warning(guild_id: int, member, moderator, reason: str) -> int:
+    """Store a warning; returns the member's warning count."""
+    data = load_warnings()
+    g, u = str(guild_id), str(member.id)
+    data.setdefault(g, {}).setdefault(u, []).append({
+        "id": uuid.uuid4().hex[:8],
+        "reason": reason,
+        "moderator_id": moderator.id,
+        "moderator_name": str(moderator),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    save_warnings(data)
+    return len(data[g][u])
+
+
 def _remove_tempban(guild_id: int, user_id: int) -> None:
     data = load_json(TEMPBANS_FILE)
     if data.get(str(guild_id), {}).pop(str(user_id), None) is not None:
@@ -390,17 +405,7 @@ class Moderation(commands.Cog):
         if not has_perm(interaction.user, "moderate_members"):
             await interaction.response.send_message("You need Moderate Members permission.", ephemeral=True)
             return
-        data = load_warnings()
-        g, u = str(interaction.guild.id), str(member.id)
-        data.setdefault(g, {}).setdefault(u, []).append({
-            "id": uuid.uuid4().hex[:8],
-            "reason": reason,
-            "moderator_id": interaction.user.id,
-            "moderator_name": str(interaction.user),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        save_warnings(data)
-        count = len(data[g][u])
+        count = add_warning(interaction.guild.id, member, interaction.user, reason)
         await interaction.response.send_message(f"Warned {member.mention}. They now have {count} warning(s).", ephemeral=True)
         embed = mod_action_embed("Member Warned", 0xF39C12, member, interaction.user, reason, {"Total warnings": str(count)})
         await send_to_mod_logs(interaction.guild, embed)
