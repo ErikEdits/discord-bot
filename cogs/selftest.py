@@ -460,13 +460,16 @@ async def feature_checks(run: SelfTestRun):
         return "detects missing deps, loader, out of memory"
 
     async def link_filter():
-        from cogs.linkfilter import INVITE_RE, scam_reason
+        from cogs.linkfilter import INVITE_RE, adult_domain, adult_text_reason, scam_reason
         allowed = SERVER_TEMPLATE.get("link_filter", {}).get("allowed_domains", [])
+        expect(adult_text_reason("ava's playhouse \U0001F4A6") is not None, "18+ server name not caught")
+        expect(adult_text_reason("Minecraft Modding Hub") is None, "normal server name flagged as 18+")
+        expect(adult_domain("pornhub.com") and not adult_domain("modrinth.com"), "adult domain check wrong")
         expect(scam_reason("dlscord-nitro.ru", "", allowed, []) is not None, "fake discord link not caught")
         expect(scam_reason("modrinth.com", "", allowed, []) is None, "modrinth.com wrongly blocked")
         expect(scam_reason("github.com", "", allowed, []) is None, "github.com wrongly blocked")
         expect(INVITE_RE.search("join discord.gg/abc") is not None, "invite not detected")
-        return "scam links caught, real sites allowed, invites detected"
+        return "scam + 18+ links caught, real sites allowed, invites detected"
 
     async def time_parsing():
         from cogs.common import parse_duration

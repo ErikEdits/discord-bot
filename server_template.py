@@ -555,6 +555,11 @@ SERVER_TEMPLATE = {
         "category_name": "CRASH REPORTS",
         "max_file_mb": 8,
         "auto_close_hours": 6,        # delete idle analyzer channels after N hours
+        # Same problem for this many different people within frequent_days -> DM to the
+        # server owner and notify_users (Discord usernames). 0 turns it off.
+        "frequent_threshold": 3,
+        "frequent_days": 7,
+        "notify_users": [],
     },
 
     # Download statistics posted to CHANNELS["mod_stats"].
@@ -584,6 +589,14 @@ SERVER_TEMPLATE = {
         # Always removed, in addition to the built-in lookalike detection.
         "blocked_domains": [],
         "warn_message": "{user} that link isn't allowed here and was removed.",
+        # Removed invites go to the team (DM) with Approve / Reject; approved ones are posted again.
+        "invite_approval": True,
+        # Invites to 18+ servers (Discord's age rating, name/description) are removed and the poster
+        # gets this marker role ("" = no role) + a DM with tips. No timeout, no ban. /unflag removes it.
+        "block_nsfw_invites": True,
+        "flag_role": "\u26A0 Possibly compromised",
+        # Links to adult websites (pornhub, onlyfans, .xxx, ...) are always removed.
+        "block_adult_links": True,
     },
 
     # Level system. Level-ups are announced in CHANNELS["level_ups"].
@@ -651,6 +664,22 @@ SERVER_TEMPLATE = {
         "enabled": True,
         "name_format": "\U0001F50A {user}'s channel",
         "default_limit": 0,           # 0 = unlimited
+    },
+
+    # Weekly report by DM to the server owner (+ send_to: Discord usernames).
+    "weekly_report": {
+        "enabled": True,
+        "weekday": 6,                 # 0 = Monday ... 6 = Sunday
+        "hour": 18,                   # local hour
+        "timezone": "Europe/Berlin",
+        "send_to": [],
+    },
+
+    # Right-click a message -> Apps -> "Report message": the report (text copy, attachments,
+    # a picture of the message) goes to this channel with buttons for the team.
+    "report": {
+        "enabled": True,
+        "channel": CHANNELS["staff_chat"],
     },
 
     # Support waiting room: joining CHANNELS["support_vc"] sends every member with a

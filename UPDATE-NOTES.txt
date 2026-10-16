@@ -1,4 +1,95 @@
 ============================================================
+ BOT UPDATE 21 - Scam- und FSK-18-Schutz, Einladungen freigeben
+============================================================
+
+EINLADUNGEN ZU ANDEREN SERVERN
+  Werden weiter sofort geloescht (ausser vom Team). Neu: das Team (Moderator,
+  Admin, Owner) bekommt eine DM mit der Nachricht, dem Ziel-Server (Name,
+  Mitglieder, Gruendungsdatum) und den Knoepfen "Approve" / "Reject".
+  Approve -> der Bot postet die Nachricht wieder:
+      "Shared by @Name (approved by @Mod): ..."
+  (ohne Pings, auch wenn @everyone drinstand). Der Absender bekommt eine DM
+  mit dem Ergebnis. Pro Person immer nur eine offene Anfrage. Hat niemand DMs
+  offen, kommt die Anfrage in den Staff-Chat.
+  Keine Anfrage bei: @everyone/@here-Spam, abgelaufenen Einladungen und
+  FSK-18-Servern.
+
+FSK-18-SERVER (wie "ava's playhouse 💦")
+  Der Bot schaut sich den Server hinter der Einladung an:
+    - Discords eigene Altersfreigabe des Servers (18+ / explizit)
+    - Name + Beschreibung: Woerter wie nsfw, 18+, onlyfans, leaks, porn ...
+    - Emojis wie 🔞 💦 🍑 🍆 👅 🥵 (zusammen mit z.B. "playhouse", "girls")
+  -> Nachricht wird geloescht, KEIN Timeout, KEIN Bann. Der Account bekommt
+  die Markierungs-Rolle "⚠ Possibly compromised" (ohne Rechte) + eine DM
+  (Englisch, max. 1x pro Tag) mit:
+    - Kopie der Nachricht (Text, Kanal, Uhrzeit) + Bild der Nachricht als Beweis
+    - welcher Server beworben wurde und warum er als 18+ erkannt wurde
+    - Account sichern: Passwort aendern, 2FA, unbekannte Geraete abmelden
+    - Anleitung: fremde Apps/Bots entfernen (Authorized Apps, PC + Handy)
+    - Virenscan (Token-Stealer in "Cheats" usw.)
+    - Markierung weg: Ticket oeffnen, wenn der Account sicher ist
+    - Links zur Discord-Hilfe
+  Steht auch in /modhistory. In den Mod-Logs gibt es den Knopf
+  "Remove flag", oder /unflag @Name.
+  (Profilbild-Erkennung per KI kommt spaeter, wenn der Server mehr Leistung hat.)
+
+LINKS ZU ERWACHSENEN-SEITEN
+  pornhub, onlyfans, xvideos, .xxx-Domains usw. werden immer geloescht
+  (Eintrag in den Mod-Logs).
+
+Einstellungen: SERVER_TEMPLATE["link_filter"] -> invite_approval,
+block_nsfw_invites, flag_role, block_adult_links.
+
+
+============================================================
+ BOT UPDATE 20 - Melden, Uebersetzen, Crash-Analyzer 2.0, Wochenbericht
+============================================================
+
+NACHRICHT MELDEN (Rechtsklick auf eine Nachricht -> Apps -> "Report message")
+  Grund eingeben -> das Team bekommt im Staff-Chat:
+    - eine Kopie vom Text (auch aus Embeds, wo Scam-Links oft stecken)
+    - die Anhaenge (Bilder/Dateien, als Spoiler)
+    - ein Bild der Nachricht im Discord-Look (Name, Profilbild, Uhrzeit, Text)
+  -> bleibt alles da, auch wenn die Nachricht spaeter geloescht wird.
+  Knoepfe fuers Team: Nachricht loeschen / Timeout 1 h / Verwarnen / Erledigt.
+  Der Gemeldete erfaehrt nicht, wer gemeldet hat. 30 s Pause zwischen
+  Meldungen, dieselbe Nachricht nur einmal pro Person.
+  Kanal aendern: SERVER_TEMPLATE["report"]["channel"].
+
+UEBERSETZEN (Rechtsklick auf eine Nachricht -> Apps -> "Translate")
+  Nur du siehst die Uebersetzung - in deiner Discord-Sprache. Ist die
+  Nachricht schon in deiner Sprache, wird sie ins Englische uebersetzt
+  (bei englischem Discord ins Deutsche). Ueber Google Uebersetzer, kostenlos,
+  ohne Key. Antwortet Google mal nicht, sagt der Bot das.
+
+CRASH-ANALYZER 2.0
+  - Viel mehr Fehler: fehlende Library-Mods (Architectury, Cloth Config,
+    GeckoLib, Fabric API, Kotlin ...), Mod laedt nicht ("has failed to load"),
+    Absturz durch Entity/Block einer Mod, Client-Mod auf dem Server, kaputte
+    Mod-Datei, Shader-Fehler, kaputte Welt/Chunks, falsche Loader-Version,
+    Grafikspeicher voll, Sinytra Connector ...
+  - "Most likely culprit": welche Mod wirklich schuld ist, mit
+    Wahrscheinlichkeit (very likely / likely / possible) und Modrinth-Link.
+  - Deine Mods: findet der Bot deine Modrinth-Mods im Log, prueft er, ob die
+    Version zur Minecraft-Version/zum Loader passt und ob es ein Update gibt.
+  - Mehr Quellen: mclo.gs, pastebin, gist.github.com und pastes.dev Links.
+    Mehrere Dateien in einer Nachricht werden zusammen ausgewertet.
+  - Haben 3 verschiedene Leute in 7 Tagen dasselbe Problem, bekommst du eine
+    DM (mit den letzten Faellen und Loesungsvorschlag). Max. 1x pro Woche pro
+    Problem. Einstellbar: frequent_threshold, frequent_days, notify_users.
+
+WOCHENBERICHT (jeden Sonntag 18 Uhr per DM an dich)
+  Mitglieder (neu/weg, Top-Einlader), Aktivitaet (Nachrichten im Vergleich
+  zur Vorwoche, aktivster Tag, Top-Kanaele, aktivste Leute, Voice-Zeit),
+  Mods (Downloads diese Woche, Modrinth + CurseForge, Follower), Moderation
+  (Verwarnungen, Timeouts, Kicks, Bans, Meldungen), Support (Tickets,
+  Bewertungen, Crash-Analysen, haeufige Crash-Probleme), Minecraft-Server
+  (aktivste Spieler aus den Logs), Bot-Laufzeit.
+  /weekly-report preview -> schickt dir den Bericht sofort zum Anschauen.
+  Weitere Empfaenger: SERVER_TEMPLATE["weekly_report"]["send_to"].
+
+
+============================================================
  BOT UPDATE 19 - Bot-Panel als Handy-App (Android)
 ============================================================
 

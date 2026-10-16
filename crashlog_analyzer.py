@@ -9,6 +9,8 @@ a launcher log or a JVM hs_err_pid*.log and returns:
         "findings":  [Finding, ...]     # most likely cause first
         "root_error": "java.lang.NullPointerException: ..." | None,
         "stack_mods": ["sodium", "iris"],   # mods that show up in the stack trace
+        "suspects":  [{"mod": "Sodium", "likelihood": "very likely", "why": "..."}],
+        "mods":      {"sodium": "0.5.8+mc1.20.1", ...},   # installed mods, if the log lists them
         "looks_like_crash": bool,
     }
 
@@ -29,6 +31,7 @@ class Finding:
     detail: str
     fix: str
     severity: int = 2
+    key: str = ""   # what exactly (e.g. "missing:fabric-api") - used to spot problems many people have
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +101,7 @@ def extract_info(text: str) -> dict:
                 info["loader"] = "NeoForge"
             elif "net.minecraftforge" in text or "fml.loading" in text:
                 info["loader"] = "Forge"
-            elif "net.fabricmc" in text:
+            elif "net.fabricmc" in text or "Fabric Mods:" in text:
                 info["loader"] = "Fabric"
             elif "org.quiltmc" in text:
                 info["loader"] = "Quilt"
@@ -207,17 +210,21 @@ def _pretty_dep(dep: str) -> str:
 def rule_fabric_dependencies(text):
     out = []
     missing, wrong, java = [], [], []
+    missing_ids, wrong_ids = [], []
     for m in _FABRIC_DEP.finditer(text):
         dep = _pretty_dep(m.group("dep"))
+        dep_id = (re.search(r"\(([^)]+)\)", m.group("dep")) or re.match(r"(.*)", m.group("dep"))).group(1)
         line = f"**{m.group('mod')}** needs {m.group('req')} of **{dep}**"
         if "(java)" in m.group("dep") or m.group("dep") == "java":
             present = m.group("rest").split(":")[-1].strip()
             java.append(f"{line} (you have Java {present})")
         elif m.group("rest").startswith("which is missing"):
             missing.append(line)
+            missing_ids.append(dep_id)
         else:
             present = m.group("rest").split(":")[-1].strip()
             wrong.append(f"{line} - installed: `{present}`")
+            wrong_ids.append(dep_id)
     breaks = [
         f"**{m.group('mod')}** is incompatible with {m.group('req')} of **{_pretty_dep(m.group('dep'))}**"
         for m in _FABRIC_BREAKS.finditer(text)
@@ -234,14 +241,14 @@ def rule_fabric_dependencies(text):
             "Missing dependency",
             _bullets(missing),
             "Download the missing mod(s) for your Minecraft version and loader and put them in the mods folder.",
-            3,
+            3, "missing:" + ",".join(sorted(set(missing_ids))),
         ))
     if wrong:
         out.append(Finding(
             "Wrong version of a dependency",
             _bullets(wrong),
             "Update or downgrade the listed mod(s) so the versions match (check the Minecraft version too).",
-            3,
+            3, "version:" + ",".join(sorted(set(wrong_ids))),
         ))
     if java:
         out.append(Finding(
@@ -272,27 +279,37 @@ _NEO_REQUIRES = re.compile(
 )
 
 
+_FABRIC_OLD_MISSING = re.compile(r"Could not find required mod: (?P<by>[\w\-]+) requires \{(?P<dep>[\w\-]+) @ \[(?P<range>[^\]]*)\]\}")
+
+
 def rule_forge_dependencies(text):
-    missing, wrong = [], []
+    missing, wrong, missing_ids, wrong_ids = [], [], [], []
     for m in _FORGE_MISSING.finditer(text):
         line = f"**{m.group('by')}** needs **{m.group('dep')}** `{m.group('range')}`"
         if m.group("actual").upper() == "[MISSING]":
             missing.append(line)
+            missing_ids.append(m.group("dep"))
         else:
             wrong.append(f"{line} - installed: `{m.group('actual')}`")
+            wrong_ids.append(m.group("dep"))
     for m in _NEO_REQUIRES.finditer(text):
         line = f"**{m.group('by')}** needs **{m.group('dep')}** {m.group('range')}"
         if m.group("state") == "not installed":
             missing.append(line)
+            missing_ids.append(m.group("dep"))
         else:
             wrong.append(f"{line} - installed: `{m.group('state')}`")
+            wrong_ids.append(m.group("dep"))
+    for m in _FABRIC_OLD_MISSING.finditer(text):
+        missing.append(f"**{m.group('by')}** needs **{m.group('dep')}** `{m.group('range')}`")
+        missing_ids.append(m.group("dep"))
     out = []
     if missing:
         out.append(Finding(
             "Missing dependency",
             _bullets(missing),
             "Download the missing mod(s) for your Minecraft version and loader and put them in the mods folder.",
-            3,
+            3, "missing:" + ",".join(sorted(set(missing_ids))),
         ))
     if wrong:
         out.append(Finding(
@@ -300,7 +317,7 @@ def rule_forge_dependencies(text):
             _bullets(wrong),
             "Update or downgrade the listed mod(s) so the versions match. If it's `minecraft`, "
             "the mod is made for a different Minecraft version.",
-            3,
+            3, "version:" + ",".join(sorted(set(wrong_ids))),
         ))
     return out
 
@@ -407,7 +424,7 @@ def rule_mixin(text):
         "A mod failed to modify the game code: " + ", ".join(f"**{m}**" for m in mods[:5]),
         "This mod is usually incompatible with another mod or made for a different Minecraft/loader version. "
         "Update it, or remove it to test.",
-        3 if len(mods) <= 3 else 2,
+        3 if len(mods) <= 3 else 2, "mixin:" + mods[0],
     )]
 
 
@@ -433,7 +450,7 @@ def rule_wrong_loader(text):
                 f"A mod{what} is made for a different mod loader than the one you're using.",
                 "Download the version of that mod for your loader (Fabric / Forge / NeoForge / Quilt) "
                 "- Modrinth lets you filter by loader.",
-                3,
+                3, "loader:" + (jar.group(1) if jar else ""),
             )]
     return []
 
@@ -498,7 +515,7 @@ def rule_config(text):
                 "Broken config file",
                 f"The config file `{m.group('file')}`{who} can't be read.",
                 "Delete that file (the mod creates a fresh one on the next start) or fix the typo in it.",
-                3,
+                3, "config:" + (mod or m.group("file")),
             )]
     return []
 
@@ -515,6 +532,9 @@ _GENERIC_PACKAGE_PARTS = {
 
 def _guess_mod_from_class(name: str) -> str | None:
     name = name.replace("/", ".")
+    hit = known_package(name)
+    if hit:
+        return hit[0]
     if name.startswith(("net.minecraft.", "com.mojang.")):
         return "Minecraft"
     for part in name.split(".")[:-1]:
@@ -599,9 +619,442 @@ def rule_session(text):
     return []
 
 
+# ---------------------------------------------------------------------------
+# Known packages -> mod names (libraries people often forget, popular mods)
+# ---------------------------------------------------------------------------
+
+KNOWN_PACKAGES = [
+    # libraries
+    ("net.fabricmc.fabric.", "Fabric API", True),
+    ("dev.architectury.", "Architectury API", True),
+    ("me.shedaniel.architectury.", "Architectury API", True),
+    ("me.shedaniel.clothconfig2.", "Cloth Config API", True),
+    ("me.shedaniel.autoconfig.", "Cloth Config API", True),
+    ("me.shedaniel.rei.", "Roughly Enough Items", False),
+    ("software.bernie.geckolib", "GeckoLib", True),
+    ("mod.azure.azurelib.", "AzureLib", True),
+    ("dev.isxander.yacl", "YetAnotherConfigLib (YACL)", True),
+    ("com.terraformersmc.modmenu.", "Mod Menu", False),
+    ("top.theillusivec4.curios.", "Curios API", True),
+    ("dev.emi.trinkets.", "Trinkets", True),
+    ("dev.emi.emi.", "EMI", False),
+    ("mezz.jei.", "JEI", False),
+    ("fuzs.puzzleslib.", "Puzzles Lib", True),
+    ("fuzs.forgeconfigapiport.", "Forge Config API Port", True),
+    ("net.minecraftforge.fml.config.", "Forge Config API Port", True),
+    ("net.blay09.mods.balm.", "Balm", True),
+    ("dev.ftb.mods.ftblibrary.", "FTB Library", True),
+    ("vazkii.patchouli.", "Patchouli", True),
+    ("com.teamresourceful.resourcefullib.", "Resourceful Lib", True),
+    ("com.teamresourceful.resourcefulconfig.", "Resourceful Config", True),
+    ("io.github.fabricators_of_create.porting_lib.", "Porting Lib", True),
+    ("dev.kosmx.playeranim.", "playerAnimator", True),
+    ("com.jamieswhiteshirt.reachentityattributes.", "Reach Entity Attributes", True),
+    ("team.lodestar.lodestone.", "Lodestone", True),
+    ("net.tslat.smartbrainlib.", "SmartBrainLib", True),
+    ("com.llamalad7.mixinextras.", "MixinExtras", True),
+    ("snownee.kiwi.", "Kiwi", True),
+    ("com.supermartijn642.core.", "SuperMartijn642's Core Lib", True),
+    ("com.supermartijn642.configlib.", "SuperMartijn642's Config Lib", True),
+    ("io.wispforest.owo.", "oωo-lib", True),
+    ("dev.onyxstudios.cca.", "Cardinal Components API", True),
+    ("org.ladysnake.cca.", "Cardinal Components API", True),
+    ("com.github.alexthe666.citadel.", "Citadel", True),
+    ("net.darkhax.bookshelf.", "Bookshelf", True),
+    ("com.teamabnormals.blueprint.", "Blueprint", True),
+    ("dev.latvian.mods.rhino.", "Rhino", True),
+    ("dev.latvian.mods.kubejs.", "KubeJS", False),
+    ("terrablender.", "TerraBlender", True),
+    ("net.fabricmc.language.kotlin.", "Fabric Language Kotlin", True),
+    ("kotlin.", "Kotlin library (Fabric Language Kotlin / Kotlin for Forge)", True),
+    ("thedarkcolour.kotlinforforge.", "Kotlin for Forge", True),
+    ("com.mrcrayfish.framework.", "Framework", True),
+    ("dev.toma.configuration.", "Configuration", True),
+    ("me.fzzyhmstrs.fzzy_config.", "Fzzy Config", True),
+    ("net.createmod.catnip.", "Create (Catnip)", True),
+    ("com.tterrag.registrate.", "Registrate (part of Create)", True),
+    ("org.sinytra.connector.", "Sinytra Connector", False),
+    ("dev.su5ed.sinytra.", "Sinytra Connector", False),
+    ("org.sinytra.fabric.", "Forgified Fabric API", True),
+    # popular mods (for naming the culprit)
+    ("me.jellysquid.mods.sodium.", "Sodium", False),
+    ("net.caffeinemc.mods.sodium.", "Sodium", False),
+    ("me.jellysquid.mods.lithium.", "Lithium", False),
+    ("net.caffeinemc.mods.lithium.", "Lithium", False),
+    ("net.coderbot.iris.", "Iris", False),
+    ("net.irisshaders.", "Iris", False),
+    ("org.embeddedt.embeddium.", "Embeddium", False),
+    ("me.jellysquid.mods.phosphor.", "Phosphor", False),
+    ("ca.spottedleaf.starlight.", "Starlight", False),
+    ("com.simibubi.create.", "Create", False),
+    ("net.optifine.", "OptiFine", False),
+    ("optifine.", "OptiFine", False),
+    ("de.erikedits.", "ErikEdits mod", False),
+    ("journeymap.", "JourneyMap", False),
+    ("xaero.", "Xaero's Minimap / World Map", False),
+    ("com.github.alexthe666.iceandfire.", "Ice and Fire", False),
+    ("net.mehvahdjukaar.moonlight.", "Moonlight Lib", True),
+    ("net.mehvahdjukaar.", "{next}", False),
+    ("com.yungnickyoung.", "YUNG's API", True),
+    ("dev.tr7zw.", "tr7zw mod (EntityCulling / NotEnoughAnimations / ...)", False),
+    ("com.natamus.collective.", "Collective", True),
+    ("com.natamus.", "{next}", False),
+    ("traben.entity_texture_features.", "Entity Texture Features", False),
+    ("traben.entity_model_features.", "Entity Model Features", False),
+    ("dev.lambdaurora.lambdynlights.", "LambDynamicLights", False),
+    ("com.mojang.blaze3d.", "Minecraft (rendering)", False),
+]
+
+# Stack frames from these never count as the culprit.
+_FRAMEWORK_PREFIXES = (
+    "java.", "javax.", "jdk.", "sun.", "com.sun.", "net.minecraft.", "com.mojang.", "net.fabricmc.loader.",
+    "net.fabricmc.api.", "org.quiltmc.loader.", "net.minecraftforge.fml.", "net.minecraftforge.eventbus.",
+    "net.minecraftforge.common.", "net.minecraftforge.client.", "net.minecraftforge.event.",
+    "net.minecraftforge.registries.", "net.neoforged.fml.", "net.neoforged.bus.", "net.neoforged.neoforge.",
+    "cpw.mods.", "org.spongepowered.", "org.objectweb.", "com.google.", "org.apache.", "io.netty.",
+    "it.unimi.", "org.lwjgl.", "oshi.", "ca.weblite.", "com.llamalad7.mixinextras.", "org.slf4j.",
+    "kotlin.", "kotlinx.", "org.jetbrains.", "com.electronwill.", "org.openjdk.", "net.minecraftforge.network.",
+    "org.sinytra.connector.", "dev.su5ed.sinytra.", "net.fabricmc.fabric.impl.base.",
+)
+
+
+def known_package(class_name: str) -> tuple[str, bool] | None:
+    """(mod name, is a library) for a class name like dev.architectury.event.Event."""
+    name = class_name.replace("/", ".").lstrip("L")
+    for prefix, mod, library in KNOWN_PACKAGES:
+        if name.startswith(prefix):
+            if mod == "{next}":   # e.g. com.natamus.<modname>.
+                mod = name[len(prefix):].split(".")[0]
+            return mod, library
+    return None
+
+
+# ---------------------------------------------------------------------------
+# More rules
+# ---------------------------------------------------------------------------
+
+_MISSING_CLASS = re.compile(r"(?:NoClassDefFoundError|ClassNotFoundException):\s*'?L?([\w.$/]+)")
+
+
+def rule_missing_library(text):
+    libs = {}
+    for cls in _MISSING_CLASS.findall(text):
+        hit = known_package(cls)
+        if hit and hit[1] and not cls.replace("/", ".").startswith("net.minecraftforge.fml.config."):
+            libs.setdefault(hit[0], cls.replace("/", "."))
+        elif cls.replace("/", ".").startswith("net.minecraftforge.fml.config.") and "net.fabricmc" in text:
+            libs.setdefault("Forge Config API Port", cls.replace("/", "."))
+    if not libs:
+        return []
+    names = list(libs)
+    return [Finding(
+        "Missing library mod",
+        "These are needed by another mod but aren't installed (or are the wrong version):\n"
+        + _bullets([f"**{n}** (`{libs[n][:80]}`)" for n in names]),
+        "Download them from Modrinth/CurseForge for your Minecraft version and loader.",
+        3, "library:" + ",".join(sorted(names)),
+    )]
+
+
+_TICKING_SECTION = re.compile(
+    r"-- (?P<what>Entity being ticked|Block entity being ticked|Block being got|Block being placed|"
+    r"Tesselating block model|Block model being tesselated|Item being rendered|Entity being rendered|"
+    r"Feature placement|Entity being loaded) --\s*\n(?P<body>(?:.*\n){1,12})"
+)
+_NAMESPACED = re.compile(r"(?:Entity Type|Name|Block|Item Type|Feature|Type|Block Entity Type)"
+                         r": (?:Block\{|ResourceKey\[[\w:]+ / )?(?P<ns>[a-z0-9_.\-]+):(?P<id>[a-z0-9_/.\-]+)")
+
+
+def rule_ticking(text):
+    m = _TICKING_SECTION.search(text)
+    if not m:
+        return []
+    what = m.group("what").lower()
+    nm = _NAMESPACED.search(m.group("body"))
+    if not nm:
+        return []
+    ns, thing = nm.group("ns"), f"{nm.group('ns')}:{nm.group('id')}"
+    kind = ("entity" if "entity being" in what and "block" not in what else
+            "block entity" if "block entity" in what else
+            "item" if "item" in what else "world generation" if "feature" in what else "block")
+    a = "an" if kind[0] in "aeiou" else "a"
+    if ns == "minecraft":
+        return [Finding(
+            f"Crash at {a} {kind}",
+            f"The game crashed while handling the vanilla {kind} `{thing}`. A mod that changes it is probably "
+            "the cause (see the suspects).",
+            "Update the mods that change this, or test without them. If the world won't load anymore, restore "
+            "a backup of the world.",
+            2, f"tick:{thing}",
+        )]
+    return [Finding(
+        f"Crash caused by {a} {kind} from {ns}",
+        f"The game crashed while handling `{thing}` - that belongs to the mod **{ns}**.",
+        f"Update **{ns}** (or remove it to test). If the world won't load anymore, restore a backup or "
+        f"remove that {kind} with a world editor (e.g. MCA Selector).",
+        3, f"tick:{ns}",
+    )]
+
+
+_FORGE_FAILED_MOD = re.compile(
+    r"(?P<name>[\w .'+\-]{2,60}?) \((?P<id>[a-z0-9_\-]{2,64})\) (?:has failed to load correctly|"
+    r"encountered an error during the (?P<phase>[\w ]+?) event phase)"
+)
+
+
+def rule_mod_failed(text):
+    mods = _dedupe(f"{m.group('name').strip()} (`{m.group('id')}`)" for m in _FORGE_FAILED_MOD.finditer(text))
+    if not mods:
+        return []
+    first = _FORGE_FAILED_MOD.search(text).group("id")
+    return [Finding(
+        "Mod failed to load",
+        "These mods crashed while loading:\n" + _bullets(mods),
+        "Update them (and their required libraries) or remove them to test. Check that they're made for your "
+        "Minecraft and loader version.",
+        3, f"failed:{first}",
+    )]
+
+
+_WRONG_SIDE = [
+    re.compile(r"Attempted to load class (?P<cls>\S+) for invalid dist DEDICATED_SERVER"),
+    re.compile(r"Environment type CLIENT is not supported"),
+    re.compile(r"(?:NoClassDefFoundError|ClassNotFoundException): (?P<cls>net/minecraft/client/\S+)"),
+]
+
+
+def rule_wrong_side(text):
+    if "dedicated" not in text.lower() and "server" not in text.lower():
+        return []
+    for p in _WRONG_SIDE:
+        m = p.search(text)
+        if m and ("DEDICATED_SERVER" in text or "Environment type CLIENT" in text or "MinecraftServer" in text):
+            return [Finding(
+                "Client-only mod on a server",
+                "A mod that only works in the game client (graphics, menus, minimaps ...) is installed on the server.",
+                "Remove client-only mods from the server's mods folder (e.g. Sodium, Iris, minimaps, Mod Menu, "
+                "sound/visual mods). The suspects below show which one.",
+                3, "client-on-server",
+            )]
+    return []
+
+
+_BROKEN_JAR = re.compile(r"(?i)(zip END header not found|ZipException|error in opening zip file|Invalid or corrupt "
+                         r"jarfile|Failed to read mod file|invalid LOC header|java\.util\.zip\.\w+Exception)")
+
+
+def rule_broken_jar(text):
+    m = _BROKEN_JAR.search(text)
+    if not m:
+        return []
+    line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.end()) if text.find("\n", m.end()) != -1 else None]
+    jar = _JAR_NAME.search(line) or _JAR_NAME.search(text[m.end():m.end() + 300])
+    what = f" (`{jar.group(1)}`)" if jar else ""
+    return [Finding(
+        "Damaged mod file",
+        f"A mod file{what} is broken or only half downloaded.",
+        "Delete it and download it again (from Modrinth or CurseForge, not from re-upload sites).",
+        3, "jar:" + (jar.group(1) if jar else ""),
+    )]
+
+
+def rule_shader(text):
+    if re.search(r"(?i)(failed to compile (?:shader|program)|shader compilation failed|ShaderCompileException|"
+                 r"error while (?:loading|compiling) shader ?pack|Couldn't compile shader|IrisPipeline.*Exception)", text):
+        return [Finding(
+            "Shader pack problem",
+            "A shader pack couldn't be compiled.",
+            "Update the shader pack and Iris/Oculus, try another shader pack, or turn shaders off. "
+            "Also update your graphics driver.",
+            2, "shader",
+        )]
+    return []
+
+
+def rule_world(text):
+    if re.search(r"(?i)(Couldn't load chunk|Failed to (?:load|read) chunk|Exception reading [^\n]*region|"
+                 r"Failed to read level\.dat|corrupted chunk|Couldn't read chunk|Error loading region file|"
+                 r"Chunk file at \[[^\]]+\] is in the wrong location)", text):
+        return [Finding(
+            "Damaged world / chunks",
+            "Parts of the world (chunks or level.dat) can't be read.",
+            "Restore a backup of the world. Single broken chunks can be deleted with MCA Selector. "
+            "Always close the game normally so the world can be saved.",
+            2, "world",
+        )]
+    return []
+
+
+def rule_language_provider(text):
+    m = re.search(r"needs language provider (\S+?)(?::|\s)", text)
+    if m:
+        return [Finding(
+            "Mod for a different loader version",
+            f"A mod needs the language provider `{m.group(1)}`, which this loader doesn't have. "
+            "It's made for an older/newer Forge or for Forge instead of NeoForge (or the other way round).",
+            "Download the version of the mod for exactly your loader and Minecraft version.",
+            3, "language:" + m.group(1),
+        )]
+    return []
+
+
+def rule_vram(text):
+    if re.search(r"GL_OUT_OF_MEMORY|(?i:out of video memory)", text):
+        return [Finding(
+            "Out of video memory",
+            "The graphics card ran out of memory.",
+            "Lower render distance, texture pack resolution and shader settings, or use a smaller modpack.",
+            2, "vram",
+        )]
+    return []
+
+
+def rule_connector(text):
+    if re.search(r"org\.sinytra\.connector|dev\.su5ed\.sinytra", text):
+        return [Finding(
+            "Fabric mods running through Sinytra Connector",
+            "Some Fabric mods are loaded on (Neo)Forge with Connector. That often breaks.",
+            "Test without the Fabric mods (or without Connector) to see if the crash goes away.",
+            1, "connector",
+        )]
+    return []
+
+
+def rule_illegal_access(text):
+    m = re.search(r"java\.lang\.IllegalAccessError: (?:class|tried to access)[^\n]{0,200}", text)
+    if m:
+        return [Finding(
+            "Mod made for a different version",
+            f"`{m.group(0)[:200]}`",
+            "A mod uses parts of Minecraft/the loader that changed. Update the mods and the loader to versions "
+            "made for each other.",
+            2, "illegal-access",
+        )]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Installed mods + the most likely culprit
+# ---------------------------------------------------------------------------
+
+_FABRIC_MOD_LINE = re.compile(r"^\s*- ([a-z0-9_\-]{2,64}) (\S+)\s*$", re.MULTILINE)
+_FABRIC_REPORT_MOD = re.compile(r"^\t\t([a-z0-9_\-]{2,64}): (.+?) (\S+)\s*$", re.MULTILINE)
+_FORGE_REPORT_MOD = re.compile(r"^\s*\S+\.jar\s*\|(?P<name>[^|]+)\|(?P<id>[a-z0-9_\-]+)\s*\|(?P<ver>[^|\s]+)\s*\|",
+                               re.MULTILINE)
+_LOADING_MODS = re.compile(r"Loading \d+ mods:\n((?:\s+(?:- |\|-- ).*\n?)+)")
+
+
+def extract_mods(text: str) -> dict[str, str]:
+    """modid -> version of the installed mods, when the log lists them."""
+    mods: dict[str, str] = {}
+    block = _LOADING_MODS.search(text)
+    if block:
+        for mod_id, ver in _FABRIC_MOD_LINE.findall(block.group(1)):
+            mods.setdefault(mod_id, ver)
+    for mod_id, _name, ver in _FABRIC_REPORT_MOD.findall(text):
+        mods.setdefault(mod_id, ver)
+    for m in _FORGE_REPORT_MOD.finditer(text):
+        mods.setdefault(m.group("id"), m.group("ver"))
+    return mods
+
+
+_FRAME = re.compile(r"^\s*at (?:[\w\-]+(?:@[\w.\-+]+)?/)?([\w$.]+)\.[\w$<>]+\([^)]*\)(?:\s*[~?]?\[([^\]]*)\])?",
+                    re.MULTILINE)
+_JAR_IN_FRAME = re.compile(r"([\w\-+.]+?)(?:[-_+](?:mc|fabric|forge|neoforge|quilt)?[\d][\w.+\-]*)?\.jar")
+
+
+def _stack_after_root(text: str) -> str:
+    """The stack trace of the deepest 'Caused by' that has frames, else the first exception's."""
+    starts = [m.start() for m in re.finditer(r"\nCaused by: ", text)]
+    for idx in reversed(starts):
+        part = text[idx:idx + 8000]
+        nxt = part.find("\nCaused by: ", 1)
+        if _FRAME.search(part[:nxt] if nxt != -1 else part):
+            return part
+    m = _EXCEPTION_LINE.search(text)
+    idx = m.start() if m else 0
+    return text[idx:idx + 8000]
+
+
+_ENTRYPOINT = re.compile(r"Could not execute entrypoint stage '\w+' due to errors, provided by '([\w\-]+)'")
+
+
+def _frame_mod(cls: str, bracket: str | None, mod_ids: set[str] = frozenset()) -> str | None:
+    hit = known_package(cls)
+    if hit and not hit[0].startswith("Minecraft"):
+        return hit[0]
+    if cls.startswith(_FRAMEWORK_PREFIXES):
+        return None
+    for part in cls.split(".")[:-1]:   # a package named like an installed mod
+        if part.lower() in mod_ids:
+            return part
+    if bracket:
+        jar = _JAR_IN_FRAME.search(bracket)
+        if jar and not re.match(r"(?i)(minecraft|client|server|forge|neoforge|fmlloader|fabric-loader|"
+                                r"intermediary|mixin|eventbus|modlauncher|securejarhandler|bootstraplauncher)", jar.group(1)):
+            return jar.group(1)
+    return _guess_mod_from_class(cls)
+
+
+def find_suspects(text: str, findings: list[Finding]) -> list[dict]:
+    scores: Counter = Counter()
+    why: dict[str, str] = {}
+
+    names: dict[str, str] = {}
+    installed_names = {m.group("id"): m.group("name").strip() for m in _FORGE_REPORT_MOD.finditer(text)}
+    installed_names.update({mid: name for mid, name, _v in _FABRIC_REPORT_MOD.findall(text)})
+
+    def add(mod: str | None, points: float, reason: str):
+        if not mod or mod.lower() in _IGNORED_STACK_MODS or mod == "Minecraft":
+            return
+        mod = installed_names.get(mod, mod)
+        key = re.sub(r"[^a-z0-9]", "", mod.lower())
+        if not key:
+            return
+        # keep the nicest spelling ("Ice and Fire" rather than "iceandfire")
+        if key not in names or (mod != mod.lower() and names[key] == names[key].lower()):
+            names[key] = mod
+        scores[key] += points
+        why.setdefault(key, reason)
+
+    for m in _FORGE_FAILED_MOD.finditer(text):
+        add(m.group("name").strip(), 6, "failed to load")
+    for mod in _ENTRYPOINT.findall(text):
+        add(mod, 5, "its start-up code crashed")
+    for f in findings:
+        if f.key.startswith("tick:") and f.key.count(":") == 1:
+            add(f.key[5:], 6, "its block/entity crashed")
+        elif f.key.startswith("mixin:"):
+            add(f.key[6:], 4, "its mixin failed")
+    mod_ids = set(extract_mods(text)) | set(_ENTRYPOINT.findall(text)) | \
+        {m.group("id") for m in _FORGE_FAILED_MOD.finditer(text)}
+    mod_ids -= {"minecraft", "forge", "neoforge", "fabricloader", "java", "fabric-api"}
+    frames = _FRAME.findall(_stack_after_root(text))[:30]
+    seen_first = False
+    for i, (cls, bracket) in enumerate(frames):
+        mod = _frame_mod(cls, bracket, mod_ids)
+        if mod:
+            add(mod, 3.0 * (0.85 ** i) + (1.5 if not seen_first else 0), "at the top of the error" if not seen_first
+                else "in the error's stack trace")
+            seen_first = True
+    for mod in _MIXIN_STACK.findall(text):
+        add(mod, 1.0, "changes the crashing code (mixin)")
+    out = []
+    for key, score in scores.most_common(3):
+        likelihood = "very likely" if score >= 5 else "likely" if score >= 3 else "possible"
+        out.append({"mod": names[key], "likelihood": likelihood, "score": round(score, 1), "why": why[key]})
+    return out
+
+
 RULES = [
     rule_fabric_dependencies,
     rule_forge_dependencies,
+    rule_missing_library,
+    rule_mod_failed,
+    rule_language_provider,
+    rule_wrong_side,
+    rule_broken_jar,
+    rule_ticking,
     rule_java_version,
     rule_duplicates,
     rule_memory,
@@ -611,7 +1064,12 @@ RULES = [
     rule_graphics,
     rule_server,
     rule_optifine,
+    rule_shader,
+    rule_world,
+    rule_vram,
+    rule_illegal_access,
     rule_missing_code,
+    rule_connector,
     rule_session,
 ]
 
@@ -632,11 +1090,15 @@ def analyze(text: str) -> dict:
         if f.title not in seen:
             seen.add(f.title)
             unique.append(f)
+    if any(f.title == "Missing library mod" for f in unique):
+        unique = [f for f in unique if f.title != "Code not found"]
     unique.sort(key=lambda f: -f.severity)
     return {
         "info": extract_info(text),
         "findings": unique,
         "root_error": find_root_error(text),
         "stack_mods": find_stack_mods(text),
+        "suspects": find_suspects(text, unique),
+        "mods": extract_mods(text),
         "looks_like_crash": bool(_ERROR_HINT.search(text)),
     }
