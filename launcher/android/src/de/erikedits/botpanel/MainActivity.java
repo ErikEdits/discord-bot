@@ -40,20 +40,35 @@ public class MainActivity extends Activity {
     private static final String TAG = "BotPanel";
     private static final int MENU_RELOAD = 1;
     private static final int MENU_DISCONNECT = 2;
+    private static final int MENU_PUSH = 3;
 
     private SharedPreferences prefs;
     private LocalServer server;
     private WebView web;
+    private String pendingPath;   // page to open after connecting (tapped notification)
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("panel", MODE_PRIVATE);
+        pendingPath = getIntent() == null ? null : getIntent().getStringExtra("path");
         String code = prefs.getString("code", null);
         if (code != null) {
             connect(code, true);
         } else {
             showSetup(null, "");
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        String path = intent.getStringExtra("path");
+        if (path == null) return;
+        if (web != null && server != null) {
+            web.loadUrl("http://127.0.0.1:" + server.port + path);
+        } else {
+            pendingPath = path;
         }
     }
 
@@ -77,6 +92,8 @@ public class MainActivity extends Activity {
         menu.clear();
         if (web != null) {
             menu.add(Menu.NONE, MENU_RELOAD, Menu.NONE, "Reload");
+            menu.add(Menu.NONE, MENU_PUSH, Menu.NONE,
+                    PushService.enabled(this) ? "Notifications: on (tap to turn off)" : "Notifications: off (tap to turn on)");
             menu.add(Menu.NONE, MENU_DISCONNECT, Menu.NONE, "Remove setup code");
         }
         return true;
@@ -88,13 +105,23 @@ public class MainActivity extends Activity {
             web.reload();
             return true;
         }
+        if (item.getItemId() == MENU_PUSH) {
+            boolean on = !PushService.enabled(this);
+            prefs.edit().putBoolean("push", on).apply();
+            if (on) startPush();
+            else PushService.stop(this);
+            Toast.makeText(this, on ? "Notifications on" : "Notifications off", Toast.LENGTH_SHORT).show();
+            invalidateOptionsMenu();
+            return true;
+        }
         if (item.getItemId() == MENU_DISCONNECT) {
             new AlertDialog.Builder(this)
                     .setTitle("Remove setup code?")
                     .setMessage("The app forgets the setup code on this phone. You need a new code from "
                             + "/panel-launcher get to connect again.")
                     .setPositiveButton("Remove", (d, w) -> {
-                        prefs.edit().remove("code").apply();
+                        prefs.edit().remove("code").remove("push_seq").apply();
+                        PushService.stop(this);
                         CookieManager.getInstance().removeAllCookies(null);
                         stopPanel();
                         showSetup(null, "");
@@ -193,6 +220,15 @@ public class MainActivity extends Activity {
                 }
                 return true;
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (pendingPath != null && url != null && url.endsWith(":" + local.port + "/")) {
+                    String path = pendingPath;
+                    pendingPath = null;
+                    view.loadUrl("http://127.0.0.1:" + local.port + path);
+                }
+            }
         });
         setContentView(web);
         invalidateOptionsMenu();
@@ -255,9 +291,22 @@ public class MainActivity extends Activity {
                 }
                 prefs.edit().putString("code", setup.code).apply();
                 showPanel(r.local, r.serverName);
+                if (PushService.enabled(this)) startPush();
                 Toast.makeText(this, "Connected as " + r.user, Toast.LENGTH_SHORT).show();
             });
         }, "panel-connect").start();
+    }
+
+    private void startPush() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+        }
+        try {
+            PushService.start(this);
+        } catch (RuntimeException e) {
+            Log.i(TAG, "Couldn't start notifications: " + e);
+        }
     }
 
     private static String reason(String html) {

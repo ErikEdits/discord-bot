@@ -348,6 +348,9 @@ class BanTools(commands.Cog):
         for action in ("ban", "kick", "mute", "ok"):
             view.add_item(AltAction(action, member.id))
         await _mod_log(member.guild, embed=embed, view=view)
+        from cogs.push import safe_notify
+        safe_notify("alt", "\U0001F575 Possible alt account", f"{member} looks like banned {profile.get('name')}",
+                    f"/members?q={member.id}")
         log.info("Possible alt: %s looks like banned %s (%s)", member, profile.get("name"), ", ".join(reasons))
 
     async def alt_action(self, interaction: discord.Interaction, action: str, user_id: int):
@@ -455,6 +458,8 @@ class BanTools(commands.Cog):
                                                     ephemeral=True)
             return
         save_json(APPEALS_FILE, data)
+        from cogs.push import safe_notify
+        safe_notify("appeal", "\U0001F4DD Ban appeal", f"{interaction.user}: {why[:200]}", "/")
         await interaction.response.send_message("✅ Your appeal was sent to the team. Check back here with "
                                                 "**Check appeal status**.", ephemeral=True)
         log.info("Ban appeal from %s for %s", interaction.user, guild.name)

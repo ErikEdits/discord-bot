@@ -348,6 +348,9 @@ class Report(commands.Cog):
             record_event(guild.id, "reports")
         except Exception:
             pass
+        from cogs.push import safe_notify
+        safe_notify("report", "\U0001F6A9 Message reported", f"{author} in #{getattr(message.channel, 'name', '?')}: "
+                    f"{reason}", "/")
         log.info("%s reported a message by %s in #%s", interaction.user, author, getattr(message.channel, "name", "?"))
         return True
 

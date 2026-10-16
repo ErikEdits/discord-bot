@@ -1,4 +1,70 @@
 ============================================================
+ BOT UPDATE 22 - 18 neue Funktionen
+============================================================
+
+MODERATION
+  Wort-Filter      Beleidigungen werden ZENSIERT statt geloescht: die Nachricht
+                   kommt sofort wieder, mit gleichem Namen + Profilbild, nur das
+                   Wort als ****. Erkennt auch "h u r e", "hur3", "huuure".
+                   /wordfilter add / remove / list (Admin). Original in den Mod-Logs.
+  Beweise bei Bann Bei jedem Bann (auch ueber Discord) kommen die letzten 50
+                   Nachrichten der Person als Datei in die Mod-Logs.
+  Entbannungs-Antrag  /ban und /tempban schicken vorher eine DM mit "Appeal the
+                   ban". Formular -> Staff-Chat mit Unban / Reject. Die Person
+                   sieht das Ergebnis mit "Check appeal status" (bei Ja mit
+                   Einladungslink). Nach Ablehnung erst nach 30 Tagen wieder.
+  Alt-Accounts     Tritt jemand bei, der wie ein Gebannter aussieht (gleiches
+                   Profilbild oder fast gleicher Name) -> Mod-Logs mit Knoepfen
+                   Ban / Kick / Timeout 1 Tag / Ignorieren.
+  Temp-Rollen      /temprole add @Name @Rolle 7d - wird automatisch wieder entfernt.
+                   /temprole remove, /temprole list.
+
+SUPPORT
+  Dringend         Tickets mit "crash", "Welt kaputt", "gehackt" ... bekommen 🔴 im
+                   Namen + Ping im Staff-Chat.
+  Support-Zeiten   Mo-Fr 13:10-22:00, Sa-So 08:00-23:00 (einstellbar). Ausserhalb
+                   bekommt ein neues Ticket einen Hinweis - und wenn jemand vom
+                   Team in den letzten 20 Min aktiv war, einen anderen Satz.
+  Versionen        "geht nicht" ohne Versionen (Ticket oder Mod-Support-Forum) ->
+                   der Bot fragt einmal nach Mod / MC-Version / Loader (Menues).
+  Ticket-Uebergabe Neuer Knopf "Transfer" im Ticket.
+
+MODS
+  /follow          Mods auswaehlen -> DM bei jedem Update dieser Mod.
+  Beta-Feedback    Bei jeder Beta/Alpha auf Modrinth bekommen Beta-Tester ein
+                   Formular (Sterne, was gut, was kaputt). Du bekommst nach 3 Tagen
+                   eine Zusammenfassung. /beta-feedback request <Version> fuer Builds
+                   ausserhalb von Modrinth, /beta-feedback summary.
+  /modpack-check   latest.log / Crash-Report / Liste der Mod-Dateien hochladen ->
+                   passen deine Mods? (MC-Version, Loader, neueste Version, fehlende
+                   Libraries, inkompatible Mods)
+  Video-Showcase   /showcase add <YouTube-Kanal> - neue Videos, die deine Mods
+                   nennen, kommen in den Admin-Kanal "🎬-showcase-review" mit
+                   Publish / Ignore. Publish -> oeffentlicher Kanal "🎬-mod-showcase".
+
+COMMUNITY + MINECRAFT
+  Danke-XP         "danke @Name" / "thx" als Antwort -> die Person bekommt XP (✨).
+  Emoji-Vorschlaege  /emoji-suggest Name Bild -> Abstimmung im Vorschlaege-Kanal,
+                   ein Admin klickt "Add" und der Bot laedt das Emoji hoch.
+  MC-Chat-Log      Der Minecraft-Chat landet in "💬-mc-chat-log" - nur fuer die
+                   Owner-Rolle sichtbar, nur lesen.
+
+PANEL + APP
+  Mitglieder       Neue Panel-Seite "Members": suchen, verwarnen, Timeout, kicken,
+                   bannen - auch in der Handy-App.
+  Befehle          Neue Panel-Seite "Commands": welche Befehle/Knoepfe wie oft
+                   benutzt werden (und welche nie).
+  Push in der App  Neue App-Version (/panel-launcher get system:Android): sie
+                   meldet neue Tickets, Meldungen, dringende Tickets, Einladungs-
+                   Anfragen, FSK-18-Funde, Entbannungs-Antraege, Alt-Accounts und
+                   Bot-Fehler sofort als Handy-Benachrichtigung. Dafuer steht
+                   dauerhaft "Bot Panel is running" in der Leiste. Im App-Menue:
+                   "Notifications: on/off". Tippen auf eine Meldung oeffnet die
+                   passende Panel-Seite.
+                   Wichtig: alte App deinstallieren, neue installieren, neuen Code holen.
+
+
+============================================================
  BOT UPDATE 21 - Scam- und FSK-18-Schutz, Einladungen freigeben
 ============================================================
 

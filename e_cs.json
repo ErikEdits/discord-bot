@@ -1,0 +1,12 @@
+{
+  "days": {
+    "2026-10-16": {
+      "/mclog ask": 2,
+      "button ticket:claim": 1
+    }
+  },
+  "last_used": {
+    "/mclog ask": 1792175395,
+    "button ticket:claim": 1792175395
+  }
+}

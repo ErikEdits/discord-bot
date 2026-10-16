@@ -446,6 +446,9 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
     )
     from cogs.stats import record_event
     record_event(guild.id, "tickets_opened")
+    from cogs.push import safe_notify
+    safe_notify("ticket", f"\U0001F3AB New ticket: {type_def['label']}", f"{interaction.user} - #{ticket_channel.name}",
+                "/tickets")
     helpers = interaction.client.get_cog("SupportHelpers")
     if helpers is not None:   # urgent check, support-times note (cogs/support_helpers.py)
         try:

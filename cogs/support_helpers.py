@@ -218,6 +218,8 @@ class SupportHelpers(commands.Cog):
                                 allowed_mentions=discord.AllowedMentions(roles=True))
             except discord.HTTPException:
                 pass
+        from cogs.push import safe_notify
+        safe_notify("urgent", "\U0001F534 Urgent ticket", f"#{channel.name} - \"{word}\"", "/tickets")
         log.info("Ticket %s marked urgent (%s)", channel.name, word)
 
     # -------- Messages ------------------------------------------------------------

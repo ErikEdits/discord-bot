@@ -497,6 +497,9 @@ class LinkFilter(commands.Cog):
                 return False
         reqs[rid] = req
         save_json(REQUESTS_FILE, data)
+        from cogs.push import safe_notify
+        safe_notify("invite", "\U0001F4E8 Invite waiting for approval",
+                    f"{message.author} -> {(info or {}).get('name', 'another server')} (approve in Discord DMs)", "/")
         return True
 
     async def decide(self, interaction: discord.Interaction, rid: str, approve: bool) -> None:
@@ -555,6 +558,8 @@ class LinkFilter(commands.Cog):
         if send_dm:
             entry["last_dm"] = time.time()
         save_json(FLAGS_FILE, data)
+        from cogs.push import safe_notify
+        safe_notify("flag", "\U0001F51E 18+ invite removed", f"{member} flagged as possibly compromised", "/members")
         try:
             from cogs.moderation import record_action
             record_action(member.guild.id, member.id, "flagged", self.bot.user, f"Possibly compromised: {reason}")

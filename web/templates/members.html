@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Members - Bot Panel{% endblock %}
+{% block content %}
+<h1>Members</h1>
+<div class="section">
+    <form method="get" action="/members" class="form-row">
+        {% if guilds|length > 1 %}
+        <div>
+            <label for="guild_id">Server</label>
+            <select name="guild_id" id="guild_id">
+                {% for g in guilds %}<option value="{{ g.id }}" {% if guild and g.id == guild.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+            </select>
+        </div>
+        {% elif guild %}<input type="hidden" name="guild_id" value="{{ guild.id }}">{% endif %}
+        <div style="flex:1">
+            <label for="q">Search by name or ID</label>
+            <input type="text" name="q" id="q" value="{{ q }}" placeholder="Name or user ID" autofocus>
+        </div>
+        <div style="align-self:end"><button>Search</button></div>
+    </form>
+</div>
+{% if q and not rows %}<div class="section"><div class="empty">Nobody found for "{{ q }}".</div></div>{% endif %}
+{% for m in rows %}
+<div class="section member">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <img src="{{ m.avatar }}" alt="" width="48" height="48" style="border-radius:50%">
+        <div style="flex:1;min-width:200px">
+            <strong>{{ m.display }}</strong> <span class="muted">{{ m.name }} - <code>{{ m.id }}</code></span><br>
+            <span class="muted">Joined {{ m.joined }} - account from {{ m.created }} - {{ m.warnings }} warning(s)</span>
+            {% if m.timed_out %}<span class="pill on">Timed out</span>{% endif %}
+            {% if m.roles %}<br><span class="muted">Roles: {{ m.roles|join(", ") }}</span>{% endif %}
+        </div>
+    </div>
+    {% if m.history %}
+    <details style="margin-top:8px"><summary class="muted">Last moderation actions</summary>
+        <ul>{% for h in m.history %}<li class="muted">{{ h }}</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+    <form method="post" action="/members/action" class="form-row" style="margin-top:10px;flex-wrap:wrap">
+        <input type="hidden" name="guild_id" value="{{ guild.id }}">
+        <input type="hidden" name="user_id" value="{{ m.id }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <div style="flex:2;min-width:180px"><input type="text" name="reason" maxlength="400" placeholder="Reason"></div>
+        <div style="min-width:90px">
+            <select name="duration" title="Timeout duration">
+                {% for d in ["10m", "1h", "6h", "1d", "3d", "7d", "28d"] %}<option value="{{ d }}" {% if d == "1h" %}selected{% endif %}>{{ d }}</option>{% endfor %}
+            </select>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="small" name="action" value="warn">Warn</button>
+            {% if m.timed_out %}
+            <button class="small" name="action" value="untimeout">Remove timeout</button>
+            {% else %}
+            <button class="small" name="action" value="timeout">Timeout</button>
+            {% endif %}
+            <button class="small danger" name="action" value="kick" onclick="return confirm('Kick {{ m.display|e }}?')">Kick</button>
+            <button class="small danger" name="action" value="ban" onclick="return confirm('Ban {{ m.display|e }}? They get a DM with an appeal button.')">Ban</button>
+        </div>
+    </form>
+</div>
+{% endfor %}
+{% endblock %}
