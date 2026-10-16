@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A small monitor with a bar chart: the bot's web panel. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M32,33h44a4,4 0,0 1,4 4v28a4,4 0,0 1,-4 4h-44a4,4 0,0 1,-4 -4v-28a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#5865F2"
+        android:pathData="M36,57h6v7h-6z M46,50h6v14h-6z M56,44h6v20h-6z M66,39h6v25h-6z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M48,69h12v5h-12z M41,74h26v4h-26z" />
+</vector>

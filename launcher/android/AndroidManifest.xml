@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bot Panel app. Built by build.sh (GitHub Actions: .github/workflows/android-apk.yml). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="de.erikedits.botpanel">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Cleartext only goes to the app's own server on 127.0.0.1; Discord is HTTPS.
+         No backup: the setup code is a personal admin key. -->
+    <application
+        android:label="Bot Panel"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material"
+        android:usesCleartextTraffic="true"
+        android:allowBackup="false">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode|density"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

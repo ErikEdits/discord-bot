@@ -1,8 +1,52 @@
+# Builds the Bot Panel Android app (launcher/android) and commits BotPanel.apk next to it.
+# The bot sends that APK with /panel-launcher get system:Android.
 name: Android panel app
+
 on:
   workflow_dispatch:
+  push:
+    branches-ignore: [main]
+    paths:
+      - "launcher/android/**"
+      - "!launcher/android/BotPanel.apk"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - run: echo placeholder
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build APK
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          export VERSION_CODE="$(git rev-list --count HEAD)"
+          export VERSION_NAME="1.0.${VERSION_CODE}"
+          launcher/android/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BotPanel-apk
+          path: launcher/android/BotPanel.apk
+      - name: Commit the APK
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher/android/BotPanel.apk
+          if git diff --cached --quiet; then echo "APK unchanged"; exit 0; fi
+          git commit -m "Build Android panel app (BotPanel.apk)"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

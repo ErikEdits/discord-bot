@@ -1,4 +1,37 @@
 ============================================================
+ BOT UPDATE 19 - Bot-Panel als Handy-App (Android)
+============================================================
+
+/panel-launcher get system:Android
+  Der Bot schickt dir per DM:
+    - BotPanel.apk (die App)
+    - darunter eine eigene Nachricht mit deinem Setup-Code (BOTPANEL1:...)
+
+  Einrichten (einmal):
+    1. BotPanel.apk in Discord antippen -> installieren. Android fragt einmal,
+       ob Discord Apps installieren darf: Einstellungen -> "Aus dieser Quelle
+       erlauben", zurueck, Installieren. Warnt Play Protect: "Weitere
+       Details" -> "Trotzdem installieren".
+    2. App "Bot Panel" oeffnen. Die Nachricht mit dem Code lange druecken ->
+       "Text kopieren", in der App "Paste" und "Connect".
+    3. Das Panel geht auf. Die App merkt sich den Code, beim naechsten Mal
+       oeffnet sie direkt das Panel.
+
+  Die App funktioniert wie der PC-Launcher (alles laeuft ueber Discord), von
+  ueberall, mit WLAN oder mobilen Daten. Dein PC muss dafuer NICHT an sein.
+  Oben rechts im Menue: Reload und "Remove setup code".
+
+  Handy und PC haben getrennte Schluessel: ein neuer Code fuers Handy macht
+  deine PC-Launcher-Datei nicht kaputt (und umgekehrt).
+  Handy verloren? /panel-launcher revoke device:Android
+  (device: Both / PC / Android, Standard: beide)
+
+  Die APK baut GitHub automatisch (Actions), wenn sich die App aendert.
+  Klappt ein App-Update nicht: alte App deinstallieren, neu installieren und
+  einen neuen Setup-Code holen.
+
+
+============================================================
  BOT UPDATE 18 - Sprachkanaele: Bedien-Panel, Name merken, Support-Warteraum
 ============================================================
 
