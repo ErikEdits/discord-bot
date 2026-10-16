@@ -55,6 +55,8 @@ CHANNELS = {
     "afk_vc":          "\U0001F4A4 AFK",
     "create_vc":       "\u2795 Create Voice",
     "support_vc":      "\U0001F3A7 Support Waiting Room",
+    "showcase":        "\U0001F3AC-mod-showcase",
+    "showcase_review": "\U0001F3AC-showcase-review",
 }
 
 
@@ -679,6 +681,20 @@ SERVER_TEMPLATE = {
     # word replaced by stars. Default list in cogs/word_filter.py; /wordfilter add/remove.
     "word_filter": {
         "enabled": True,
+    },
+
+    # Beta testers get a feedback form for every beta/alpha version (and /beta-feedback request);
+    # the owner gets a summary after summary_after_days.
+    "beta_feedback": {
+        "enabled": True,
+        "summary_after_days": 3,
+    },
+
+    # YouTube videos about the mods from followed channels (/showcase add) -> admin review
+    # channel (Publish / Ignore) -> public CHANNELS["showcase"].
+    "showcase": {
+        "enabled": True,
+        "check_minutes": 60,
     },
 
     # Tickets / mod-support forum: urgent tickets (crash, world broken, hacked ...), a note
