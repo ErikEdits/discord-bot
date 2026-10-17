@@ -10,6 +10,11 @@ Inside a ticket, staff can:
 After a ticket is closed the opener gets a DM asking for a 1-5 star rating;
 the rating is posted to the ticket-archive channel.
 
+Closing: staff are asked how it was solved (optional). The archive post then has a
+short summary - problem, solution, how long it took and who helped. The rating DM
+and the archive post have a "Reopen" button (for reopen_days): it opens a new
+ticket with the old transcript attached.
+
 Configuration lives in SERVER_TEMPLATE['tickets']. Ticket types each
 become a separate button on the panel posted by /ticket-panel.
 """
@@ -26,7 +31,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import has_perm, is_staff, post_to_webhook, webhook_url
+from cogs.common import format_duration, has_perm, is_staff, post_to_webhook, webhook_url
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.tickets")
@@ -139,8 +144,15 @@ async def _ensure_ticket_category(guild: discord.Guild) -> discord.CategoryChann
         return None
 
 
-async def _build_transcript(channel: discord.TextChannel) -> tuple[str, str]:
-    """Collect a plain-text transcript. Returns (filename, body)."""
+async def _build_transcript(channel: discord.TextChannel, info: dict | None = None) -> tuple[str, str]:
+    """Collect a plain-text transcript. Returns (filename, body).
+    If info is given, it's filled with: helpers (staff names who wrote), problem (first text of the
+    opener), messages (count), claimed_by (name or None)."""
+    creator_id, _ = _parse_topic(channel)
+    helpers: list[str] = []
+    problem = ""
+    claimed = None
+    count = 0
     lines = [
         f"Ticket transcript: #{channel.name}",
         f"Channel ID: {channel.id}",
@@ -150,6 +162,19 @@ async def _build_transcript(channel: discord.TextChannel) -> tuple[str, str]:
     ]
     try:
         async for msg in channel.history(limit=None, oldest_first=True):
+            if not msg.author.bot:
+                count += 1
+                if msg.author.id == creator_id:
+                    problem = problem or (msg.content or "").strip()
+                elif _is_staff(msg.author) and msg.author.display_name not in helpers:
+                    helpers.append(msg.author.display_name)
+            elif msg.embeds and msg.embeds[0].fields:
+                fields = msg.embeds[0].fields
+                if not problem and fields[0].name != "Claimed by":
+                    problem = fields[0].value   # first answer of the ticket form
+                for f in fields:
+                    if f.name == "Claimed by":
+                        claimed = f.value
             ts = msg.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
             author = f"{msg.author} ({msg.author.id})"
             lines.append(f"[{ts}] {author}: {msg.content}")
@@ -164,27 +189,64 @@ async def _build_transcript(channel: discord.TextChannel) -> tuple[str, str]:
         lines.append("(missing permission to read message history)")
     except Exception as e:
         lines.append(f"(error fetching history: {e})")
+    if info is not None:
+        member = None
+        if claimed and claimed.strip("<@!>").isdigit():
+            member = channel.guild.get_member(int(claimed.strip("<@!>")))
+        info.update(helpers=helpers, problem=problem, messages=count,
+                    claimed_by=member.display_name if member else None)
     return f"{channel.name}.txt", "\n".join(lines)
 
 
-async def _archive_and_delete(channel: discord.TextChannel, closer: discord.abc.User) -> None:
+def _short(text: str, limit: int = 300) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def build_summary_fields(embed: discord.Embed, info: dict, solution: str | None, opened, closed,
+                         claimed_by: str | None) -> None:
+    """Problem / solution / duration / helpers on the archive post."""
+    embed.add_field(name="Problem", value=_short(info.get("problem") or "") or "*(not written)*", inline=False)
+    embed.add_field(name="Solution", value=_short(solution or "") or "*(not given)*", inline=False)
+    duration = format_duration(closed - opened) if opened else "?"
+    embed.add_field(name="Took", value=duration, inline=True)
+    helpers = list(info.get("helpers") or [])
+    if claimed_by and claimed_by not in helpers:
+        helpers.insert(0, claimed_by)
+    embed.add_field(name="Helped by", value=", ".join(helpers[:8]) or "nobody from the team wrote", inline=True)
+    embed.add_field(name="Messages", value=str(info.get("messages", 0)), inline=True)
+
+
+async def _archive_and_delete(channel: discord.TextChannel, closer: discord.abc.User,
+                              solution: str | None = None) -> None:
     guild = channel.guild
-    filename, body = await _build_transcript(channel)
+    info: dict = {}
+    filename, body = await _build_transcript(channel, info)
     archive = discord.utils.get(guild.text_channels, name=CHANNELS["ticket_archive"])
+    creator_id, type_key = _parse_topic(channel)
+    closed_at = datetime.now(timezone.utc)
+    archive_msg_id = 0
+    reopen = bool(creator_id and type_key and _ticket_type(type_key) and _config().get("reopen_days", 7))
     if archive:
-        creator_id, type_key = _parse_topic(channel)
         embed = discord.Embed(
             title=f"Closed: #{channel.name}",
             color=0x95A5A6,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=closed_at,
         )
         embed.add_field(name="Type", value=type_key or "unknown", inline=True)
         embed.add_field(name="Closed by", value=closer.mention if hasattr(closer, "mention") else str(closer), inline=True)
         if creator_id:
             embed.add_field(name="Opener", value=f"<@{creator_id}>", inline=True)
+        if _config().get("close_summary", True):
+            build_summary_fields(embed, info, solution, channel.created_at, closed_at, info.get("claimed_by"))
         file = discord.File(BytesIO(body.encode("utf-8")), filename=filename)
+        view = None
+        if reopen:
+            view = discord.ui.View(timeout=None)
+            view.add_item(ReopenButton(guild.id, creator_id, type_key, 0, int(closed_at.timestamp())))
         try:
-            await archive.send(embed=embed, file=file)
+            sent = await archive.send(embed=embed, file=file, view=view)
+            archive_msg_id = getattr(sent, "id", 0) or 0
         except discord.Forbidden:
             log.warning("Cannot post to %s", CHANNELS["ticket_archive"])
         except Exception:
@@ -211,22 +273,29 @@ async def _archive_and_delete(channel: discord.TextChannel, closer: discord.abc.
     from cogs.stats import record_event
     record_event(guild.id, "tickets_closed")
 
-    creator_id, _type_key = _parse_topic(channel)
     if creator_id and _config().get("rating_enabled", True):
-        await _ask_for_rating(guild, creator_id, channel.name)
+        reopen_button = None
+        if reopen:
+            reopen_button = ReopenButton(guild.id, creator_id, type_key, archive_msg_id, int(closed_at.timestamp()))
+        await _ask_for_rating(guild, creator_id, channel.name, reopen_button)
 
 
-async def _ask_for_rating(guild: discord.Guild, user_id: int, ticket_name: str) -> None:
+async def _ask_for_rating(guild: discord.Guild, user_id: int, ticket_name: str,
+                          reopen_button: discord.ui.Item | None = None) -> None:
     user = guild.get_member(user_id)
     if user is None:
         return
     view = discord.ui.View(timeout=None)
     for stars in range(1, 6):
         view.add_item(RateButton(guild.id, stars, ticket_name))
+    if reopen_button is not None:
+        reopen_button.item.row = 1
+        view.add_item(reopen_button)
     embed = discord.Embed(
         title="How was your support?",
         description=f"Your ticket **#{ticket_name}** on **{guild.name}** was closed.\n"
-                    "Please rate the help you got - it takes one click.",
+                    "Please rate the help you got - it takes one click."
+                    + ("\n\nNot solved after all? Press **Reopen**." if reopen_button is not None else ""),
         color=0x5865F2,
     )
     try:
@@ -256,13 +325,20 @@ class RateButton(discord.ui.DynamicItem[discord.ui.Button],
 
     async def callback(self, interaction: discord.Interaction):
         stars_text = "\u2B50" * self.stars
+        keep = None
+        for row in (interaction.message.components if interaction.message else []):
+            for comp in getattr(row, "children", []):
+                if (getattr(comp, "custom_id", "") or "").startswith("ticket:reopen:"):
+                    keep = discord.ui.View(timeout=None)
+                    keep.add_item(discord.ui.Button(label=comp.label, emoji=comp.emoji, style=comp.style,
+                                                    custom_id=comp.custom_id))
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title="Thanks for your feedback!",
                 description=f"You rated ticket **#{self.ticket_name}** with {stars_text}",
                 color=0x57F287,
             ),
-            view=None,
+            view=keep,
         )
         from cogs.stats import record_rating
         record_rating(self.guild_id, self.stars)
@@ -284,6 +360,85 @@ class RateButton(discord.ui.DynamicItem[discord.ui.Button],
         except discord.HTTPException:
             pass
         log.info("Ticket %s rated %d/5 by %s", self.ticket_name, self.stars, interaction.user)
+
+
+def _b36(number: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while True:
+        number, rest = divmod(number, 36)
+        out = digits[rest] + out
+        if number == 0:
+            return out
+
+
+class ReopenButton(discord.ui.DynamicItem[discord.ui.Button],
+                   template=r"ticket:reopen:(?P<guild>[0-9a-z]+):(?P<user>[0-9a-z]+):(?P<type>[\w-]{1,20}):"
+                            r"(?P<arch>[0-9a-z]+):(?P<closed>[0-9a-z]+)"):
+    """Opens a new ticket for the same person and type, with the old transcript attached.
+    In the rating DM (the opener) and on the archive post (staff). The IDs are base 36 in the
+    custom_id so it stays below Discord's 100 characters."""
+
+    def __init__(self, guild_id: int, user_id: int, type_key: str, archive_msg_id: int, closed_ts: int):
+        self.guild_id, self.user_id, self.type_key = guild_id, user_id, type_key[:20]
+        self.archive_msg_id, self.closed_ts = archive_msg_id, closed_ts
+        super().__init__(discord.ui.Button(
+            label="Reopen", emoji="\U0001F501", style=discord.ButtonStyle.secondary,
+            custom_id=f"ticket:reopen:{_b36(guild_id)}:{_b36(user_id)}:{self.type_key}:{_b36(archive_msg_id)}:"
+                      f"{_b36(closed_ts)}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["guild"], 36), int(match["user"], 36), match["type"], int(match["arch"], 36),
+                   int(match["closed"], 36))
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message("I'm not on that server anymore.", ephemeral=True)
+            return
+        days = float(_config().get("reopen_days", 7))
+        if datetime.now(timezone.utc).timestamp() - self.closed_ts > days * 86400:
+            await interaction.response.send_message(
+                f"This ticket was closed more than {days:g} days ago - please open a new one.", ephemeral=True)
+            return
+        clicker = guild.get_member(interaction.user.id)
+        if interaction.user.id != self.user_id and not (clicker and _is_staff(clicker)):
+            await interaction.response.send_message("Only the person who opened it or the team can reopen this.",
+                                                    ephemeral=True)
+            return
+        member = guild.get_member(self.user_id)
+        if member is None:
+            await interaction.response.send_message("That member isn't on the server anymore.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        archive = discord.utils.get(guild.text_channels, name=CHANNELS["ticket_archive"])
+        old = None
+        if archive is not None:
+            msg_id = self.archive_msg_id or (interaction.message.id if interaction.message and
+                                             interaction.message.channel.id == archive.id else 0)
+            if msg_id:
+                try:
+                    old = await archive.fetch_message(msg_id)
+                except discord.HTTPException:
+                    old = None
+        old_name = old.embeds[0].title.replace("Closed: ", "") if old is not None and old.embeds else "the old ticket"
+        by = "by the opener" if interaction.user.id == self.user_id else f"by {interaction.user.mention}"
+        result = await _create_ticket(guild, member, self.type_key,
+                                      reopened=f"{by}. Previous ticket: {old_name} (closed <t:{self.closed_ts}:R>)")
+        if isinstance(result, str):
+            await interaction.followup.send(result, ephemeral=True)
+            return
+        if old is not None and old.attachments:
+            try:
+                data = await old.attachments[0].read()
+                await result.send("\U0001F4C4 Transcript of the previous ticket:",
+                                  file=discord.File(BytesIO(data), filename=old.attachments[0].filename))
+            except discord.HTTPException:
+                pass
+        await interaction.followup.send(f"Ticket reopened: {result.mention}", ephemeral=True)
+        log.info("Ticket for %s reopened by %s as %s", member, interaction.user, result.name)
+        await _after_open(interaction.client, result, member, self.type_key, None)
 
 
 def _existing_ticket(guild: discord.Guild, user_id: int) -> discord.TextChannel | None:
@@ -355,34 +510,49 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
     if guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
+    result = await _create_ticket(guild, interaction.user, type_key, answers)
+    if isinstance(result, str):
+        await interaction.response.send_message(result, ephemeral=True)
+        return
+    await interaction.response.send_message(f"Ticket created: {result.mention}", ephemeral=True)
+    await _after_open(interaction.client, result, interaction.user, type_key, answers)
+
+
+async def _after_open(client, channel: discord.TextChannel, member, type_key: str,
+                      answers: list[tuple[str, str]] | None) -> None:
+    helpers = client.get_cog("SupportHelpers")
+    if helpers is not None:   # urgent check, support-times note (cogs/support_helpers.py)
+        try:
+            await helpers.ticket_opened(channel, member, type_key, answers)
+        except Exception:
+            log.exception("Support helpers failed for %s", channel.name)
+
+
+async def _create_ticket(guild: discord.Guild, member: discord.Member, type_key: str,
+                         answers: list[tuple[str, str]] | None = None,
+                         reopened: str | None = None) -> discord.TextChannel | str:
+    """Create the ticket channel + intro message. Returns the channel, or an error text for the user."""
     type_def = _ticket_type(type_key)
     if type_def is None:
-        await interaction.response.send_message("Unknown ticket type.", ephemeral=True)
-        return
+        return "Unknown ticket type."
     category = await _ensure_ticket_category(guild)
     if category is None:
-        await interaction.response.send_message(
-            "I can't create the TICKETS category. Check my permissions.", ephemeral=True
-        )
-        return
+        return "I can't create the TICKETS category. Check my permissions."
 
     existing = discord.utils.find(
-        lambda c: c.category_id == category.id and _parse_topic(c)[0] == interaction.user.id,
+        lambda c: c.category_id == category.id and _parse_topic(c)[0] == member.id,
         guild.text_channels,
     )
     if existing:
-        await interaction.response.send_message(
-            f"You already have an open ticket: {existing.mention}", ephemeral=True
-        )
-        return
+        return f"You already have an open ticket: {existing.mention}"
 
     number = _next_ticket_number(guild.id)
-    safe_name = "".join(c for c in interaction.user.name.lower() if c.isalnum() or c == "-")[:18] or "user"
+    safe_name = "".join(c for c in member.name.lower() if c.isalnum() or c == "-")[:18] or "user"
     channel_name = f"{type_key}-{number:04d}-{safe_name}"[:90]
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        interaction.user: discord.PermissionOverwrite(
+        member: discord.PermissionOverwrite(
             view_channel=True, send_messages=True, read_message_history=True,
             attach_files=True, embed_links=True,
         ),
@@ -404,14 +574,11 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
             name=channel_name,
             category=category,
             overwrites=overwrites,
-            topic=_build_topic(interaction.user.id, type_key),
-            reason=f"Ticket opened by {interaction.user}",
+            topic=_build_topic(member.id, type_key),
+            reason=f"Ticket {'reopened' if reopened else 'opened'} by {member}",
         )
     except discord.Forbidden:
-        await interaction.response.send_message(
-            "I don't have permission to create a ticket channel.", ephemeral=True
-        )
-        return
+        return "I don't have permission to create a ticket channel."
 
     mentions = []
     for name in ("Moderator", "Admin"):
@@ -420,7 +587,9 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
             mentions.append(role.mention)
 
     color = int(type_def.get("color", "0x5865F2"), 16)
-    intro = type_def.get("intro", "").format(user=interaction.user.mention)
+    intro = type_def.get("intro", "").format(user=member.mention)
+    if reopened:
+        intro = f"\U0001F501 **Reopened** - {reopened}\n\n{intro}"
     embed = discord.Embed(
         title=f"{type_def.get('emoji', '')} {type_def['label']} #{number:04d}".strip(),
         description=intro,
@@ -441,20 +610,12 @@ async def _open_ticket(interaction: discord.Interaction, type_key: str,
     except discord.Forbidden:
         pass
 
-    await interaction.response.send_message(
-        f"Ticket created: {ticket_channel.mention}", ephemeral=True
-    )
     from cogs.stats import record_event
     record_event(guild.id, "tickets_opened")
     from cogs.push import safe_notify
-    safe_notify("ticket", f"\U0001F3AB New ticket: {type_def['label']}", f"{interaction.user} - #{ticket_channel.name}",
-                "/tickets")
-    helpers = interaction.client.get_cog("SupportHelpers")
-    if helpers is not None:   # urgent check, support-times note (cogs/support_helpers.py)
-        try:
-            await helpers.ticket_opened(ticket_channel, interaction.user, type_key, answers)
-        except Exception:
-            log.exception("Support helpers failed for %s", ticket_channel.name)
+    safe_notify("ticket", f"\U0001F3AB {'Reopened' if reopened else 'New'} ticket: {type_def['label']}",
+                f"{member} - #{ticket_channel.name}", "/tickets")
+    return ticket_channel
 
 
 class OpenTicketButton(discord.ui.Button):
@@ -632,15 +793,23 @@ class ForwardBugModal(discord.ui.Modal, title="Forward bug report"):
             opener = self.channel.guild.get_member(creator_id)
             embed.add_field(name="Reported by", value=str(opener) if opener else f"User ID {creator_id}", inline=True)
         embed.add_field(name="Forwarded by", value=str(interaction.user), inline=True)
+        from cogs.bug_tracker import forget_bug, record_bug
+        number = record_bug(self.channel.guild.id, creator_id, self.bug_title.value, self.channel.name,
+                            str(interaction.user))
+        embed.title = f"\U0001F41B Bug #{number}: {self.bug_title.value}"[:256]
+        embed.set_footer(text=f"When it's fixed: /bug fixed bug:{number} version:<version> - the reporter gets a DM")
         ok = await post_to_webhook(
             url, embed=embed, file_name=filename, file_bytes=body.encode("utf-8"), username="Bug Reports",
         )
         if not ok:
+            forget_bug(number)
             await interaction.followup.send("Sending to the bug webhook failed - check `/settings show`.", ephemeral=True)
             return
-        await interaction.followup.send("Bug forwarded.", ephemeral=True)
+        await interaction.followup.send(f"Bug forwarded as **#{number}**. Use `/bug fixed` when it's fixed.",
+                                        ephemeral=True)
         try:
-            await self.channel.send(f"\U0001F4E4 This bug was forwarded to the developers by {interaction.user.mention}.")
+            await self.channel.send(f"\U0001F4E4 This bug was forwarded to the developers as **Bug #{number}** by "
+                                    f"{interaction.user.mention}. You'll get a DM when it's fixed.")
         except discord.HTTPException:
             pass
         log.info("Bug ticket %s forwarded by %s", self.channel.name, interaction.user)
@@ -659,11 +828,32 @@ async def _do_close(interaction: discord.Interaction) -> None:
             "Only staff or the ticket opener can close this ticket.", ephemeral=True
         )
         return
+    if is_mod and not is_creator and _config().get("close_summary", True):
+        await interaction.response.send_modal(CloseTicketModal(channel))
+        return
+    await _close_now(interaction, channel, None)
+
+
+async def _close_now(interaction: discord.Interaction, channel: discord.TextChannel, solution: str | None) -> None:
     await interaction.response.send_message(
         f"Closing ticket in 5 seconds (by {interaction.user.mention}). Transcript will be saved."
+        + (f"\n**Solution:** {_short(solution, 1500)}" if solution else "")
     )
     await asyncio.sleep(5)
-    await _archive_and_delete(channel, interaction.user)
+    await _archive_and_delete(channel, interaction.user, solution)
+
+
+class CloseTicketModal(discord.ui.Modal, title="Close ticket"):
+    solution = discord.ui.TextInput(
+        label="How was it solved? (optional)", style=discord.TextStyle.paragraph, required=False,
+        max_length=1000, placeholder="e.g. Updated Fabric API to 0.92 / duplicate of a known bug ...")
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _close_now(interaction, self.channel, (self.solution.value or "").strip() or None)
 
 
 class Tickets(commands.Cog):
@@ -673,7 +863,7 @@ class Tickets(commands.Cog):
         if types_def:
             bot.add_view(TicketPanelView(types_def))
         bot.add_view(TicketControlsView(forward=True))
-        bot.add_dynamic_items(RateButton)
+        bot.add_dynamic_items(RateButton, ReopenButton)
         low_power = os.getenv("LOW_POWER", "").lower() in ("1", "true", "yes")
         if low_power:
             log.info("LOW_POWER: skipping ticket auto-close background loop")
@@ -777,7 +967,8 @@ class Tickets(commands.Cog):
                             )
                         except discord.Forbidden:
                             pass
-                        await _archive_and_delete(channel, self.bot.user)
+                        await _archive_and_delete(channel, self.bot.user,
+                                                  f"Closed automatically - no activity for {hours}h.")
                 except Exception:
                     log.exception("Auto-close failed for %s", channel.name)
 

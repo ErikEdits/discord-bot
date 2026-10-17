@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import DATA_DIR, is_admin, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, is_admin, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.showcase")
@@ -156,7 +156,7 @@ class Showcase(commands.Cog):
 
     @tasks.loop(minutes=60)
     async def loop(self):
-        if not _config().get("enabled", True):
+        if not _config().get("enabled", True) or not feature_on("showcase"):
             return
         data = _load()
         if not data["channels"]:

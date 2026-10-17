@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Features - Bot Panel{% endblock %}
+{% block content %}
+<h1>Features</h1>
+<div class="section">
+    <p class="muted">Switch automatic features on or off. Switched-off features stop right away - no restart needed.
+    Commands keep working.</p>
+</div>
+{% for group, items in groups.items() %}
+<div class="section">
+    <h3>{{ group }}</h3>
+    {% for f in items %}
+    <form method="post" action="/features/toggle" class="feature-row">
+        <input type="hidden" name="key" value="{{ f.key }}">
+        <input type="hidden" name="on" value="{{ '0' if f.on else '1' }}">
+        <div>
+            <strong>{{ f.name }}</strong> <span class="pill {{ 'off' if f.on else 'on' }}">{{ 'On' if f.on else 'Off' }}</span><br>
+            <span class="muted">{{ f.what }}</span>
+        </div>
+        <button class="small {{ 'danger' if f.on else '' }}">{{ 'Turn off' if f.on else 'Turn on' }}</button>
+    </form>
+    {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}

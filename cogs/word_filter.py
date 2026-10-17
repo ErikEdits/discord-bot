@@ -21,7 +21,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, is_admin, load_json, mark_bot_delete, save_json
+from cogs.common import DATA_DIR, feature_on, is_admin, load_json, mark_bot_delete, save_json
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.word_filter")
@@ -177,11 +177,12 @@ class WordFilter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        await self.check(message)
+        if feature_on("word_filter"):
+            await self.check(message)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if before.content != after.content:
+        if before.content != after.content and feature_on("word_filter"):
             await self.check(after)
 
     group = app_commands.Group(name="wordfilter", description="Words the bot censors (administrator).",

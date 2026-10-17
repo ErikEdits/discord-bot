@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from cogs.common import feature_on
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.welcome_image")
@@ -120,7 +121,7 @@ class WelcomeImage(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot or not _config().get("enabled", True):
+        if member.bot or not _config().get("enabled", True) or not feature_on("welcome_image"):
             return
         channel = discord.utils.get(member.guild.text_channels, name=CHANNELS.get("welcome", ""))
         if channel is None:

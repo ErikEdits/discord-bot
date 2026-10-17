@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
 
-from cogs.common import is_staff
+from cogs.common import feature_on, is_staff
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.support_helpers")
@@ -174,9 +174,9 @@ class SupportHelpers(commands.Cog):
     async def ticket_opened(self, channel: discord.TextChannel, opener: discord.Member, type_key: str,
                             answers: list[tuple[str, str]] | None) -> None:
         text = "\n".join(v for _, v in answers or [])
-        if _config().get("priority", True) and URGENT.search(text):
+        if _config().get("priority", True) and feature_on("urgent_tickets") and URGENT.search(text):
             await self.mark_urgent(channel, opener, URGENT.search(text).group(0))
-        if _config().get("support_times", True):
+        if _config().get("support_times", True) and feature_on("support_hours_note"):
             now = datetime.now(_tz())
             if not in_support_hours(now):
                 active = self.staff_active(channel.guild)
@@ -191,7 +191,8 @@ class SupportHelpers(commands.Cog):
                     await channel.send(note)
                 except discord.HTTPException:
                     pass
-        if text and _config().get("version_question", True) and type_key in ("bug", "help"):
+        if text and _config().get("version_question", True) and feature_on("version_question") \
+                and type_key in ("bug", "help"):
             self.checked_messages[channel.id] = 0
             if HAS_VERSION.search(text):
                 self.asked.add(channel.id)   # the form already has the versions
@@ -255,9 +256,10 @@ class SupportHelpers(commands.Cog):
             return
         self.checked_messages[message.channel.id] = seen + 1
         text = message.content or ""
-        if opener and _config().get("priority", True) and (m := URGENT.search(text)):
+        if opener and _config().get("priority", True) and feature_on("urgent_tickets") and (m := URGENT.search(text)):
             await self.mark_urgent(message.channel, message.author, m.group(0))
-        if not _config().get("version_question", True) or message.channel.id in self.asked:
+        if not _config().get("version_question", True) or not feature_on("version_question") \
+                or message.channel.id in self.asked:
             return
         if opener and type_key not in ("bug", "help"):
             return
@@ -269,7 +271,8 @@ class SupportHelpers(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
-        if _is_support_post(thread) is None or not _config().get("version_question", True):
+        if _is_support_post(thread) is None or not _config().get("version_question", True) \
+                or not feature_on("version_question"):
             return
         self.checked_messages.setdefault(thread.id, 0)
 

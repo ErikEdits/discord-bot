@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     private static final int MENU_RELOAD = 1;
     private static final int MENU_DISCONNECT = 2;
     private static final int MENU_PUSH = 3;
+    private static final int MENU_PUSH_TYPES = 4;
 
     private SharedPreferences prefs;
     private LocalServer server;
@@ -94,6 +95,7 @@ public class MainActivity extends Activity {
             menu.add(Menu.NONE, MENU_RELOAD, Menu.NONE, "Reload");
             menu.add(Menu.NONE, MENU_PUSH, Menu.NONE,
                     PushService.enabled(this) ? "Notifications: on (tap to turn off)" : "Notifications: off (tap to turn on)");
+            menu.add(Menu.NONE, MENU_PUSH_TYPES, Menu.NONE, "Notification types\u2026");
             menu.add(Menu.NONE, MENU_DISCONNECT, Menu.NONE, "Remove setup code");
         }
         return true;
@@ -112,6 +114,10 @@ public class MainActivity extends Activity {
             else PushService.stop(this);
             Toast.makeText(this, on ? "Notifications on" : "Notifications off", Toast.LENGTH_SHORT).show();
             invalidateOptionsMenu();
+            return true;
+        }
+        if (item.getItemId() == MENU_PUSH_TYPES) {
+            showPushTypes();
             return true;
         }
         if (item.getItemId() == MENU_DISCONNECT) {
@@ -295,6 +301,25 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "Connected as " + r.user, Toast.LENGTH_SHORT).show();
             });
         }, "panel-connect").start();
+    }
+
+    /** Pick which kinds of notifications the phone shows (the others are skipped quietly). */
+    private void showPushTypes() {
+        String[] labels = new String[PushService.KINDS.length];
+        boolean[] checked = new boolean[PushService.KINDS.length];
+        for (int i = 0; i < PushService.KINDS.length; i++) {
+            labels[i] = PushService.KINDS[i][1];
+            checked[i] = PushService.kindEnabled(this, PushService.KINDS[i][0]);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Which notifications?")
+                .setMultiChoiceItems(labels, checked, (d, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("Save", (d, w) -> {
+                    PushService.saveKinds(this, checked);
+                    Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void startPush() {

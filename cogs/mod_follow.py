@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, load_json, save_json
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mod_follow")
@@ -111,6 +111,8 @@ class ModFollow(commands.Cog):
 
     @commands.Cog.listener()
     async def on_mod_release(self, project: dict, version: dict):
+        if not feature_on("mod_follow"):
+            return
         pid = project.get("id")
         followers = [int(uid) for uid, ids in _load()["users"].items() if pid in ids]
         if not followers:

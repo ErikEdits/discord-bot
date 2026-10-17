@@ -10,6 +10,7 @@ import logging
 import discord
 from discord.ext import commands
 
+from cogs.common import feature_on
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.welcome_dm")
@@ -32,7 +33,7 @@ class WelcomeDM(commands.Cog):
         if member.bot:
             return
         config = SERVER_TEMPLATE.get("welcome_dm", {})
-        if not config.get("enabled"):
+        if not config.get("enabled") or not feature_on("welcome_dm"):
             return
         guild = member.guild
         message_template = config.get("message", "Welcome to **{guild}**, {user}!")

@@ -10,6 +10,20 @@ import asyncio
 import time
 from collections import deque
 
+# Every kind that's sent, with its name in the app's "Notification types" menu
+# (keep in sync with KINDS in launcher/android/.../PushService.java).
+KINDS = {
+    "ticket": "New tickets",
+    "urgent": "Urgent tickets",
+    "report": "Reported messages",
+    "appeal": "Ban appeals",
+    "alt": "Possible alt accounts",
+    "invite": "Invite requests",
+    "flag": "Compromised accounts",
+    "panel": "New panel devices",
+    "error": "Bot errors",
+}
+
 ITEMS: deque = deque(maxlen=100)
 _seq = 0
 _event: asyncio.Event | None = None

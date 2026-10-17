@@ -1,4 +1,57 @@
 ============================================================
+ BOT UPDATE 23 - 15 kleine Verbesserungen
+============================================================
+
+DISCORD
+  Geloeschte Bilder  Bilder werden ein paar Tage gemerkt. Loescht jemand eine
+                   Nachricht mit Bild, ist das Bild trotzdem in den Message-Logs.
+  Ticket "Reopen"  Nach dem Schliessen: Knopf "Reopen" in der Bewertungs-DM (und
+                   im Ticket-Archiv fuers Team), 7 Tage lang. Das neue Ticket
+                   bekommt das alte Transcript.
+  Ticket-Zusammenfassung  Beim Schliessen fragt der Bot das Team "Wie wurde es
+                   geloest?" (optional). Im Ticket-Archiv stehen dann Problem,
+                   Loesung, Dauer, Helfer und Anzahl Nachrichten.
+  Rollen zurueck   Wer geht und wiederkommt, bekommt seine alten Rollen + Nickname
+                   zurueck (Team-/Admin-Rollen NICHT automatisch - Sicherheit).
+  Download-Zaehler Neuer gesperrter Sprachkanal "📥 Downloads: 12.3k" (Modrinth +
+                   CurseForge), alle 30 Min aktualisiert.
+  Bug behoben      "Forward bug" gibt jedem Bug eine Nummer (#12). Mit
+                   /bug fixed bug:12 version:1.4.2 bekommt der Melder eine DM
+                   "Fixed in 1.4.2". /bug list zeigt offene Bugs.
+  AFK              Wenn du zurueck bist, bekommst du per DM eine Liste, wer dich
+                   waehrend AFK erwaehnt hat (mit Links).
+
+BOT
+  /bot-health      RAM, CPU, Laufzeit, Ping, Speicherplatz, Fehler der letzten 24h
+                   - kommt per DM an dich (nur Admins).
+  /help            Alle Befehle nach Kategorien, mit Auswahlmenue und Suche. Jeder
+                   sieht nur die Befehle, die er benutzen darf.
+  Aufraeumen       Jede Nacht um 4 Uhr werden alte, erledigte Daten geloescht
+                   (Umfragen, Antraege, Emoji-Vorschlaege ... aelter als 90 Tage).
+
+PANEL + APP
+  Features         Neue Panel-Seite "Features": jede automatische Funktion
+                   (Wort-Filter, Counting, Danke-XP, Willkommens-DM ...) mit einem
+                   Klick an/aus - ohne Neustart.
+  Access           Neue Panel-Seite "Access": wer wann von welchem Geraet im Panel
+                   war. Neues Geraet -> DM an dich (+ Push in der App).
+  Startseite       "Today at a glance": online, im Voice, offene/dringende Tickets,
+                   Nachrichten + Joins heute, Downloads heute, was auf dich wartet
+                   (Antraege, Bugs ...), Fehler der letzten 24h.
+  Mitglieder       Bei "Members" zusaetzlich: Level + Rang, Nachrichten, wer sie
+                   eingeladen hat, wie viele sie eingeladen haben, Join-Nummer,
+                   Markierung (FSK-18-Invite), gerade im Voice.
+  App              Menue "Notification types...": auswaehlen, welche
+                   Benachrichtigungen kommen (z.B. keine Bot-Fehler).
+                   -> Neue App-Version noetig (siehe unten).
+
+NACH DEM UPDATE
+  1. /bot-update-check, dann zweimal /bot-restart.
+  2. Handy-App: alte App deinstallieren, /panel-launcher get system:Android,
+     neue APK installieren, Setup-Code einfuegen.
+  3. Der Download-Zaehler-Kanal wird automatisch angelegt.
+
+============================================================
  BOT UPDATE 22 - 18 neue Funktionen
 ============================================================
 
