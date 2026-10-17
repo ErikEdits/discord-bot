@@ -30,7 +30,7 @@ import discord
 from discord.ext import commands
 from PIL import Image
 
-from cogs.common import DATA_DIR, is_staff, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, is_staff, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.ban_tools")
@@ -326,7 +326,7 @@ class BanTools(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot or not _config().get("alt_detection", True):
+        if member.bot or not _config().get("alt_detection", True) or not feature_on("alt_detection"):
             return
         avatar = await avatar_hash(member)
         hit = self.find_alt(member.guild.id, [member.name, member.global_name, member.display_name], avatar)

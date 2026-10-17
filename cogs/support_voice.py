@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, is_staff, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, is_staff, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE, SUPPORT_VC_OVERWRITES
 
 log = logging.getLogger("setup-bot.support_voice")
@@ -152,6 +152,8 @@ class SupportVoice(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if not _config().get("enabled", True) or before.channel == after.channel or member.bot:
+            return
+        if not feature_on("support_voice"):
             return
         room = CHANNELS["support_vc"]
         if after.channel is not None and after.channel.name == room and not is_staff(member, _support_roles()):

@@ -26,7 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.temp_voice")
@@ -255,7 +255,7 @@ class TempVoice(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if not _config().get("enabled", True) or before.channel == after.channel:
             return
-        if after.channel is not None and after.channel.name == CHANNELS.get("create_vc"):
+        if after.channel is not None and after.channel.name == CHANNELS.get("create_vc") and feature_on("temp_voice"):
             await self._create_for(member, after.channel)
         if before.channel is not None and self.owner_of(before.channel) is not None:
             await self._handle_leave(member, before.channel)

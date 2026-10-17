@@ -8,6 +8,8 @@
 - is_admin / is_staff / has_perm: permission checks shared by the cogs. They also
   accept members the server owner unlocked the running command for (/grant).
 - post_to_webhook: send an embed + optional file to a Discord webhook URL.
+- FEATURES / feature_on / set_feature: on/off switches for automatic features
+  (panel page "Features"), stored in data/settings.json under "features".
 """
 
 import json
@@ -65,6 +67,71 @@ def set_setting(key: str, value) -> None:
     else:
         data[key] = value
     save_json(SETTINGS_FILE, data)
+
+
+# -------- Feature switches ------------------------------------------------
+
+# key -> (group, name, what it does). Everything is on until switched off in the panel.
+FEATURES: dict[str, tuple[str, str, str]] = {
+    "word_filter": ("Moderation", "Word filter", "Censors bad words and reposts the message."),
+    "link_filter": ("Moderation", "Link & invite filter", "Deletes scam links, server invites and 18+ links."),
+    "antispam": ("Moderation", "Anti-spam", "Stops message floods and mass mentions."),
+    "auto_slowmode": ("Moderation", "Auto slowmode", "Turns on slowmode when a channel gets very busy."),
+    "alt_detection": ("Moderation", "Alt detection", "Warns the team when a banned member seems to come back."),
+    "image_backup": ("Moderation", "Deleted image backup", "Keeps images so deleted ones still show in the logs."),
+    "crash_analyzer": ("Support", "Crash analyzer", "Analyses crash logs that are posted."),
+    "auto_faq": ("Support", "FAQ suggestions", "Suggests a FAQ entry when a question matches."),
+    "version_question": ("Support", "Version question", "Asks for mod/MC/loader version when they're missing."),
+    "urgent_tickets": ("Support", "Urgent tickets", "Marks urgent tickets with a red dot and pings the team."),
+    "support_hours_note": ("Support", "Support hours note", "Tells people when the team is usually around."),
+    "support_voice": ("Support", "Support waiting room", "Tells the team when someone waits in the support call."),
+    "levels": ("Community", "XP & levels", "XP for messages and voice."),
+    "thanks_xp": ("Community", "Thank-you XP", "\"thanks @name\" gives that person XP."),
+    "counting": ("Community", "Counting", "The counting game channel."),
+    "afk": ("Community", "AFK notes", "Replies when someone mentions an AFK member."),
+    "welcome_dm": ("Community", "Welcome DM", "Sends new members a welcome DM."),
+    "welcome_image": ("Community", "Welcome image", "Posts a welcome picture for new members."),
+    "role_restore": ("Community", "Role restore", "Gives members their old roles back when they rejoin."),
+    "temp_voice": ("Community", "Join-to-create voice", "Creates a private voice channel on join."),
+    "mod_follow": ("Mods", "Follow DMs", "DMs followers when a mod gets an update."),
+    "showcase": ("Mods", "Video showcase", "Checks followed YouTube channels for new videos."),
+    "download_counter": ("Mods", "Download counter", "Channel name with the total downloads."),
+    "mc_chat_log": ("Minecraft", "MC chat log", "Copies the Minecraft chat into the owner-only channel."),
+    "weekly_report": ("Bot", "Weekly report", "Sunday report DM."),
+    "data_cleanup": ("Bot", "Data cleanup", "Deletes old finished reminders, polls, giveaways ... every night."),
+}
+
+_features_cache: tuple[int, dict] = (-1, {})
+
+
+def feature_states() -> dict[str, bool]:
+    global _features_cache
+    try:
+        mtime = SETTINGS_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    if mtime != _features_cache[0]:
+        stored = get_setting("features") or {}
+        _features_cache = (mtime, stored if isinstance(stored, dict) else {})
+    return {key: bool(_features_cache[1].get(key, True)) for key in FEATURES}
+
+
+def feature_on(key: str) -> bool:
+    """False only if the feature was switched off in the panel (unknown keys are always on)."""
+    if key not in FEATURES:
+        return True
+    return feature_states()[key]
+
+
+def set_feature(key: str, on: bool) -> None:
+    if key not in FEATURES:
+        raise KeyError(key)
+    stored = dict(get_setting("features") or {})
+    if on:
+        stored.pop(key, None)
+    else:
+        stored[key] = False
+    set_setting("features", stored or None)
 
 
 def webhook_url(setting_key: str, env_key: str) -> str | None:

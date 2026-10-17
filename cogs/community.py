@@ -24,7 +24,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import has_perm, is_admin, load_json, mark_bot_delete, save_json
+from cogs.common import feature_on, has_perm, is_admin, load_json, mark_bot_delete, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.community")
@@ -299,6 +299,8 @@ class Community(commands.Cog):
             return
         if isinstance(message.author, discord.Member) and message.author.guild_permissions.manage_messages:
             return  # staff answers themselves
+        if not feature_on("auto_faq"):
+            return
         faqs = _guild_faqs(message.guild.id)
         if not faqs:
             return
