@@ -40,6 +40,84 @@
 </div>
 {% endif %}
 
+{% if status.ready %}
+<div class="section" id="overview">
+    <h3><span class="live-pulse"></span>Today at a glance <span class="live-label">live</span></h3>
+    <div class="cards">
+        <div class="card">
+            <div class="label">Online now</div>
+            <div class="value" id="ov-online">…</div>
+            <div class="sub" id="ov-voice"></div>
+        </div>
+        <div class="card">
+            <div class="label">Open tickets</div>
+            <div class="value" id="ov-tickets">…</div>
+            <div class="sub" id="ov-urgent"></div>
+        </div>
+        <div class="card">
+            <div class="label">Today</div>
+            <div class="value" id="ov-messages">…</div>
+            <div class="sub" id="ov-joins"></div>
+        </div>
+        <div class="card">
+            <div class="label">Downloads today</div>
+            <div class="value" id="ov-dl-today">…</div>
+            <div class="sub" id="ov-dl-total"></div>
+        </div>
+        <div class="card">
+            <div class="label">Waiting for you</div>
+            <div class="value" id="ov-pending">…</div>
+            <div class="sub" id="ov-pending-sub"></div>
+        </div>
+        <div class="card">
+            <div class="label">Errors (24h)</div>
+            <div class="value" id="ov-errors">…</div>
+            <div class="sub"><a href="/logs">Logs →</a></div>
+        </div>
+    </div>
+    <ul class="overview-list muted" id="ov-error-list"></ul>
+</div>
+<script>
+function nf(n) { return (n === null || n === undefined) ? '–' : Number(n).toLocaleString(); }
+function setText(id, t) { const el = document.getElementById(id); if (el) el.textContent = t; }
+async function tickOverview() {
+    try {
+        const r = await fetch('/api/overview');
+        if (!r.ok) return;
+        const o = await r.json();
+        if (!o.ready) return;
+        setText('ov-online', nf(o.online));
+        setText('ov-voice', o.members.toLocaleString() + ' members · ' + o.in_voice + ' in voice');
+        setText('ov-tickets', nf(o.tickets));
+        setText('ov-urgent', o.urgent ? ('🔴 ' + o.urgent + ' urgent') : 'none urgent');
+        const t = o.today || {};
+        setText('ov-messages', nf(t.messages) + ' msgs');
+        setText('ov-joins', '+' + (t.joins || 0) + ' joined · -' + (t.leaves || 0) + ' left · ' + (t.tickets_opened || 0) + ' tickets');
+        if (o.downloads) {
+            setText('ov-dl-today', '+' + nf(o.downloads.today));
+            setText('ov-dl-total', nf(o.downloads.total) + ' total');
+        } else {
+            setText('ov-dl-today', '–');
+            setText('ov-dl-total', 'counted every 30 min');
+        }
+        const pend = Object.entries(o.pending || {}).filter(([k, v]) => v > 0);
+        setText('ov-pending', nf(pend.reduce((a, [k, v]) => a + v, 0)));
+        setText('ov-pending-sub', pend.length ? pend.map(([k, v]) => v + ' ' + k.toLowerCase()).join(' · ') : 'nothing open');
+        setText('ov-errors', nf(o.errors.count));
+        const list = document.getElementById('ov-error-list');
+        list.innerHTML = '';
+        for (const e of o.errors.last) {
+            const li = document.createElement('li');
+            li.textContent = new Date(e.t * 1000).toLocaleTimeString() + ' · ' + e.where + ': ' + e.msg;
+            list.appendChild(li);
+        }
+    } catch (e) {}
+}
+tickOverview();
+setInterval(tickOverview, Math.max({{ poll_ms(request) }}, 15000));
+</script>
+{% endif %}
+
 <div class="section">
     <h3><span class="live-pulse"></span>Server Load <span class="live-label">live - updates every 3s</span></h3>
     <div class="cards">

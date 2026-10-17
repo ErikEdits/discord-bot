@@ -31,6 +31,17 @@
             {% if m.roles %}<br><span class="muted">Roles: {{ m.roles|join(", ") }}</span>{% endif %}
         </div>
     </div>
+    {% set x = m.extra %}
+    <div class="member-facts">
+        {% if x.join_number %}<span title="Join position">#{{ x.join_number }} to join</span>{% endif %}
+        {% if x.level is defined %}<span>Level {{ x.level }} ({{ x.xp }} XP{% if x.rank %}, rank #{{ x.rank }}{% endif %})</span>
+        <span>{{ x.messages }} messages</span>{% endif %}
+        {% if x.invited_by %}<span>Invited by {{ x.invited_by }}</span>{% endif %}
+        {% if x.invited %}<span>Invited: {{ x.invited }}</span>{% endif %}
+        {% if x.voice %}<span>🔊 in {{ x.voice }}</span>{% endif %}
+        {% if x.flagged %}<span class="pill warn" title="Posted an 18+ invite - maybe hacked">⚠ Flagged {{ x.flagged }}</span>{% endif %}
+        {% if m.warnings %}<span class="pill warn">{{ m.warnings }} warning(s)</span>{% endif %}
+    </div>
     {% if m.history %}
     <details style="margin-top:8px"><summary class="muted">Last moderation actions</summary>
         <ul>{% for h in m.history %}<li class="muted">{{ h }}</li>{% endfor %}</ul>
