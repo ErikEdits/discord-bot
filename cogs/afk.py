@@ -1,5 +1,6 @@
 """/afk [reason]: while you're AFK, anyone who mentions you gets a short note.
-Your AFK status ends automatically when you write your next message.
+Your AFK status ends automatically when you write your next message - then you
+get a DM listing who mentioned you while you were away (with jump links).
 State: data/afk.json.
 """
 
@@ -11,12 +12,31 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, format_duration, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, format_duration, load_json, save_json
 
 log = logging.getLogger("setup-bot.afk")
 
 STATE_FILE = DATA_DIR / "afk.json"
 NOTICE_COOLDOWN = 60  # seconds per (channel, afk member)
+MAX_PINGS = 25        # mentions remembered per AFK member
+
+
+def pings_embed(pings: list[dict], away: str) -> discord.Embed:
+    """The "while you were away" list."""
+    lines = []
+    for p in pings[-15:]:
+        text = (p.get("text") or "").replace("\n", " ")
+        if len(text) > 80:
+            text = text[:77] + "..."
+        lines.append(f"<t:{int(p['at'])}:t> **{p.get('by', '?')}** in <#{p.get('channel')}>"
+                     f" - [jump]({p.get('url')})" + (f"\n> {text}" if text else ""))
+    more = len(pings) - 15
+    embed = discord.Embed(
+        title=f"\U0001F4EC You were mentioned {len(pings)}x while AFK",
+        description="\n".join(lines) + (f"\n... and {more} older" if more > 0 else ""),
+        color=0x5865F2)
+    embed.set_footer(text=f"You were away for {away}.")
+    return embed
 
 
 class Afk(commands.Cog):
@@ -44,7 +64,7 @@ class Afk(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.guild is None or message.author.bot:
+        if message.guild is None or message.author.bot or not feature_on("afk"):
             return
         afk_users = self.data.get(str(message.guild.id), {})
         if not afk_users:
@@ -53,9 +73,22 @@ class Afk(commands.Cog):
         if entry is not None:
             self._save()
             away = format_duration(timedelta(seconds=int(time.time() - entry.get("since", time.time()))))
+            pings = entry.get("pings") or []
+            note = ""
+            if pings:
+                try:
+                    await message.author.send(embed=pings_embed(pings, away))
+                    note = f" You were mentioned {len(pings)}x - I sent you the list by DM."
+                except discord.HTTPException:
+                    try:
+                        await message.channel.send(content=message.author.mention, embed=pings_embed(pings, away),
+                                                   delete_after=60, allowed_mentions=discord.AllowedMentions.none())
+                    except discord.HTTPException:
+                        pass
             try:
-                await message.channel.send(f"\U0001F44B Welcome back {message.author.mention}, you were AFK for {away}.",
-                                           delete_after=10, allowed_mentions=discord.AllowedMentions.none())
+                await message.channel.send(
+                    f"\U0001F44B Welcome back {message.author.mention}, you were AFK for {away}.{note}",
+                    delete_after=15, allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass
         now = time.monotonic()
@@ -64,6 +97,11 @@ class Afk(commands.Cog):
             info = afk_users.get(str(member.id))
             if info is None or member.id == message.author.id:
                 continue
+            pings = info.setdefault("pings", [])
+            pings.append({"by": message.author.display_name, "channel": message.channel.id,
+                          "url": message.jump_url, "at": time.time(), "text": (message.content or "")[:200]})
+            del pings[:-MAX_PINGS]
+            self._save()
             key = (message.channel.id, member.id)
             if now - self._cooldown.get(key, 0) < NOTICE_COOLDOWN:
                 continue

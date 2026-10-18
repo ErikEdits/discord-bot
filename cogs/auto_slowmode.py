@@ -17,7 +17,7 @@ from collections import deque
 import discord
 from discord.ext import commands, tasks
 
-from cogs.common import DATA_DIR, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, load_json, save_json
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.auto_slowmode")
@@ -69,6 +69,8 @@ class AutoSlowmode(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.guild is None or message.author.bot or not isinstance(message.channel, discord.TextChannel):
+            return
+        if not feature_on("auto_slowmode"):
             return
         if message.channel.name not in set(_config().get("channels", [])):
             return

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+from cogs.common import feature_on
 from server_template import SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.antispam")
@@ -52,7 +53,7 @@ class AntiSpam(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         cfg = _config()
-        if not cfg.get("enabled", False):
+        if not cfg.get("enabled", False) or not feature_on("antispam"):
             return
         if message.guild is None or message.author.bot:
             return

@@ -32,7 +32,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, is_staff, load_json, mark_bot_delete, save_json
+from cogs.common import DATA_DIR, feature_on, is_staff, load_json, mark_bot_delete, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.linkfilter")
@@ -623,11 +623,12 @@ class LinkFilter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        await self._check(message)
+        if feature_on("link_filter"):
+            await self._check(message)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if before.content != after.content:
+        if before.content != after.content and feature_on("link_filter"):
             await self._check(after)
 
 

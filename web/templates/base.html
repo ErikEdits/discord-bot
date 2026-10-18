@@ -24,6 +24,8 @@
     <a href="/maintenance" {% if request.url.path == "/maintenance" %}class="active"{% endif %}>Maintenance</a>
     <a href="/mclog" {% if request.url.path == "/mclog" %}class="active"{% endif %}>MC Live</a>
     <a href="/command-stats" {% if request.url.path == "/command-stats" %}class="active"{% endif %}>Commands</a>
+    <a href="/features" {% if request.url.path == "/features" %}class="active"{% endif %}>Features</a>
+    <a href="/access" {% if request.url.path == "/access" %}class="active"{% endif %}>Access</a>
     <a href="/logs" {% if request.url.path == "/logs" %}class="active"{% endif %}>Logs</a>
     {% set who = panel_user(request) %}{% if who %}<span class="muted" style="font-size: 12px">{{ who }}</span>{% endif %}
     {% if relay_mode(request) %}<span class="muted" style="font-size: 12px" title="Connected through the panel launcher">via launcher</span>

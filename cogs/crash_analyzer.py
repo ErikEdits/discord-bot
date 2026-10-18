@@ -34,7 +34,7 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
-from cogs.common import DATA_DIR, is_staff, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, is_staff, load_json, save_json
 from crashlog_analyzer import analyze
 from server_template import SERVER_TEMPLATE
 
@@ -354,7 +354,7 @@ class CrashAnalyzer(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
             return
-        if not _is_analyzer_channel(message.channel):
+        if not feature_on("crash_analyzer") or not _is_analyzer_channel(message.channel):
             return
         opener = _opener_id(message.channel)
         if message.author.id != opener and not is_staff(message.author, _support_roles()):

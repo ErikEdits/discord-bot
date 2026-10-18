@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.common import DATA_DIR, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.community_extras")
@@ -100,6 +100,8 @@ class CommunityExtras(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.guild is None or message.author.bot or not _config().get("thanks_xp", True):
+            return
+        if not feature_on("thanks_xp"):
             return
         people = self.thanked(message)
         if not people:

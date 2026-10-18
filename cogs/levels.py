@@ -30,7 +30,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.common import DATA_DIR, is_admin, load_json, save_json
+from cogs.common import DATA_DIR, feature_on, is_admin, load_json, save_json
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.levels")
@@ -148,7 +148,7 @@ class Levels(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         cfg = _config()
-        if not cfg.get("enabled", True):
+        if not cfg.get("enabled", True) or not feature_on("levels"):
             return
         if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member):
             return
@@ -183,7 +183,7 @@ class Levels(commands.Cog):
 
     @tasks.loop(seconds=60)
     async def voice_loop(self):
-        if not _config().get("enabled", True):
+        if not _config().get("enabled", True) or not feature_on("levels"):
             return
         per_minute = int(_config().get("voice_xp_per_minute", 0))
         hub = CHANNELS.get("create_vc")

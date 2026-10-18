@@ -400,6 +400,11 @@ SERVER_TEMPLATE = {
         "forward_types": ["bug"],
         # After a ticket is closed the opener gets a DM asking for a 1-5 star rating.
         "rating_enabled": True,
+        # Closing asks staff "how was it solved?" and the archive post gets a summary
+        # (problem, solution, duration, helpers).
+        "close_summary": True,
+        # The rating DM and the archive post get a "Reopen" button for this many days (0 = off).
+        "reopen_days": 7,
         "types": [
             {
                 "key": "bug",
@@ -708,6 +713,40 @@ SERVER_TEMPLATE = {
     "mc_chat_log": {
         "enabled": True,
         "role": "Owner",
+    },
+
+    # Images posted in the server are kept for a few days, so the message log can still
+    # show them after the message was deleted (cogs/logging_cog.py, data/image_cache/).
+    "image_backup": {
+        "enabled": True,
+        "keep_days": 3,
+        "max_total_mb": 200,     # oldest images are deleted when the folder gets bigger
+        "max_file_mb": 8,
+    },
+
+    # Members who leave and come back get their old roles and nickname back (cogs/role_restore.py).
+    # Roles with moderator/admin permissions are only given back if restore_staff_roles is True.
+    "role_restore": {
+        "enabled": True,
+        "keep_days": 180,
+        "restore_staff_roles": False,
+        "restore_nickname": True,
+        "never_restore": [],     # role names that are never given back
+    },
+
+    # Locked voice channel showing the total downloads, e.g. "📥 Downloads: 12.3k" (cogs/member_counter.py).
+    "download_counter": {
+        "enabled": True,
+        "name_format": "\U0001F4E5 Downloads: {count}",
+        "category": "",          # empty = same category as the member counter
+    },
+
+    # Nightly cleanup of old finished data (closed polls, decided appeals ...), cogs/data_cleanup.py.
+    "data_cleanup": {
+        "enabled": True,
+        "keep_days": 90,
+        "hour": 4,
+        "timezone": "Europe/Berlin",
     },
 
     # Tickets / mod-support forum: urgent tickets (crash, world broken, hacked ...), a note

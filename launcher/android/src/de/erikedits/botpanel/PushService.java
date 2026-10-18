@@ -11,8 +11,10 @@ import android.content.SharedPreferences;
 import android.os.IBinder;
 import android.util.Log;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Keeps a connection to the bot (through the panel relay) and shows its notifications:
@@ -29,6 +31,32 @@ public class PushService extends Service {
     private volatile boolean running;
     private Thread worker;
     private int nextId = 100;
+
+    /** Notification kinds sent by the bot (cogs/push.py KINDS) and their names in the menu. */
+    static final String[][] KINDS = {
+            {"ticket", "New tickets"},
+            {"urgent", "Urgent tickets"},
+            {"report", "Reported messages"},
+            {"appeal", "Ban appeals"},
+            {"alt", "Possible alt accounts"},
+            {"invite", "Invite requests"},
+            {"flag", "Compromised accounts"},
+            {"panel", "New panel devices"},
+            {"error", "Bot errors"},
+    };
+
+    static boolean kindEnabled(Context context, String kind) {
+        Set<String> off = context.getSharedPreferences("panel", MODE_PRIVATE).getStringSet("push_off", null);
+        return off == null || !off.contains(kind);
+    }
+
+    static void saveKinds(Context context, boolean[] checked) {
+        Set<String> off = new HashSet<>();
+        for (int i = 0; i < KINDS.length && i < checked.length; i++) {
+            if (!checked[i]) off.add(KINDS[i][0]);
+        }
+        context.getSharedPreferences("panel", MODE_PRIVATE).edit().putStringSet("push_off", off).apply();
+    }
 
     static boolean enabled(Context context) {
         return context.getSharedPreferences("panel", MODE_PRIVATE).getBoolean("push", true);
@@ -125,6 +153,7 @@ public class PushService extends Service {
                         if (o instanceof Map) {
                             @SuppressWarnings("unchecked")
                             Map<String, Object> item = (Map<String, Object>) o;
+                            if (!kindEnabled(this, Json.str(item, "kind"))) continue;
                             show(Json.str(item, "title"), Json.str(item, "body"), Json.str(item, "path"));
                         }
                     }

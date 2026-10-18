@@ -352,6 +352,10 @@ class PanelLauncher(commands.Cog):
         self._touch(record["slot"])
         member = guilds[0].get_member(user_id)
         name = member.display_name if member else record.get("name", str(user_id))
+        from web.access_log import record_and_notify
+        device = slot_device(record["slot"])
+        record_and_notify(self.bot, user_id=user_id, name=name, method="launcher",
+                          device_id=f"launcher:{record['key_id']}", label=f"{DEVICE_NAMES[device]} {'app' if device == 'android' else 'launcher'}")
         method, target = str(header["m"]).upper(), str(header["p"])
         if method not in ("GET", "POST", "HEAD") or not target.startswith("/") or not target.isascii():
             return error_page(400, "Bad request", "Unsupported request.")

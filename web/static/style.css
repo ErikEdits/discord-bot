@@ -226,3 +226,8 @@ td form { display: inline; }
 
 .discord-login { width: 100%; padding: 12px; background: #5865f2; font-weight: 600; }
 .discord-login:hover { background: #4752c4; }
+.member-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.pill.warn { background: rgba(240,177,50,0.2); color: var(--warn); }
+.feature-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--bg-3); }
+.feature-row:last-child { border-bottom: none; }
+.overview-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }

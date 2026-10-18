@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Access - Bot Panel{% endblock %}
+{% block content %}
+<h1>Panel access</h1>
+<div class="section">
+    <p class="muted">Who opened the panel and from which device. When a device is used for the first time,
+    the server owner gets a DM. Launchers and the phone app are logged at most every 30 minutes.</p>
+</div>
+<div class="section">
+    <h3>Devices ({{ devices|length }})</h3>
+    {% if devices %}
+    <table>
+        <thead><tr><th>Who</th><th>Device</th><th>How</th><th>First seen</th><th>Last seen</th><th>Visits</th><th></th></tr></thead>
+        <tbody>
+        {% for d in devices %}
+        <tr>
+            <td>{{ d.name }}</td><td>{{ d.label }}</td><td>{{ d.method }}</td>
+            <td class="muted">{{ d.first_s }}</td><td class="muted">{{ d.last_s }}</td><td>{{ d.count }}</td>
+            <td>
+                <form method="post" action="/access/forget" onsubmit="return confirm('Forget this device?')">
+                    <input type="hidden" name="device" value="{{ d.id }}">
+                    <button class="small">Forget</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="empty">No access logged yet.</div>{% endif %}
+</div>
+<div class="section">
+    <h3>Last visits</h3>
+    {% if events %}
+    <table>
+        <thead><tr><th>When</th><th>Who</th><th>Device</th><th>How</th><th>IP</th></tr></thead>
+        <tbody>
+        {% for e in events %}
+        <tr>
+            <td class="muted">{{ e.t_s }}</td>
+            <td>{{ e.name }}{% if e.new %} <span class="pill warn">new device</span>{% endif %}</td>
+            <td>{{ e.label }}</td><td>{{ e.method }}</td><td class="muted">{{ e.ip or "-" }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="empty">Nothing yet.</div>{% endif %}
+</div>
+{% endblock %}

@@ -53,6 +53,7 @@ app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="stat
 
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "admin")
 SESSION_COOKIE = "panel_session"
+DEVICE_COOKIE = "panel_device"
 STATE_COOKIE = "panel_oauth_state"
 # token -> {"user_id": int | None, "name": str, "created": float}; user_id None = password login
 SESSIONS: dict[str, dict] = {}
@@ -128,12 +129,27 @@ def _panel_user(request: Request) -> Optional[str]:
     return session.get("name") if session else None
 
 
-def _new_session(user_id: Optional[int], name: str) -> RedirectResponse:
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def _new_session(user_id: Optional[int], name: str, request: Optional[Request] = None,
+                 method: str = "password") -> RedirectResponse:
     token = secrets.token_urlsafe(32)
     SESSIONS[token] = {"user_id": user_id, "name": name, "created": time.time()}
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=86400 * 7,
                     secure=PANEL_PUBLIC_URL.startswith("https://"))
+    if request is not None:
+        # A long-lived random id per browser, so the access log can tell new devices apart (web/access_log.py).
+        device = request.cookies.get(DEVICE_COOKIE) or ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{20,64}", device):
+            device = secrets.token_urlsafe(24)
+        resp.set_cookie(DEVICE_COOKIE, device, httponly=True, samesite="lax", max_age=86400 * 400,
+                        secure=PANEL_PUBLIC_URL.startswith("https://"))
+        from web.access_log import browser_label, record_and_notify
+        record_and_notify(current_bot(), user_id=user_id, name=name, method=method, device_id=f"browser:{device}",
+                          label=browser_label(request.headers.get("user-agent", "")), ip=_client_ip(request))
     return resp
 
 
@@ -348,7 +364,7 @@ async def login_submit(request: Request, password: str = Form(...)):
         return RedirectResponse("/login?error=password_disabled", status_code=303)
     if secrets.compare_digest(password, PANEL_PASSWORD):
         log.info("Panel login with password")
-        return _new_session(None, "password login")
+        return _new_session(None, "password login", request, "password")
     log.warning("Panel login with wrong password")
     return RedirectResponse("/login?error=wrong_password", status_code=303)
 
@@ -405,7 +421,7 @@ async def oauth_callback(request: Request, code: Optional[str] = None, state: Op
         log.warning("Panel login refused for %s (%s): not an administrator", name, user_id)
         return RedirectResponse("/login?error=not_admin", status_code=303)
     log.info("Panel login via Discord: %s (%s)", name, user_id)
-    resp = _new_session(user_id, name)
+    resp = _new_session(user_id, name, request, "discord")
     resp.delete_cookie(STATE_COOKIE)
     return resp
 
@@ -1177,12 +1193,52 @@ class _Actor:
         return f"{self.name} (panel)"
 
 
+def _member_extra(guild: discord.Guild, m: discord.Member, flags: dict, join_order: dict) -> dict:
+    """Extra team-only info for the members page: level, invites, join number, flags, voice."""
+    bot = current_bot()
+    extra: dict = {"join_number": join_order.get(m.id)}
+    levels = bot.get_cog("Levels") if bot else None
+    if levels is not None:
+        from cogs.levels import level_from_xp
+        entry = levels.data.get(str(guild.id), {}).get(str(m.id))
+        if entry:
+            ranked = [uid for uid, _ in levels._ranked(guild.id)]
+            extra["level"] = level_from_xp(int(entry.get("xp", 0)))
+            extra["xp"] = int(entry.get("xp", 0))
+            extra["messages"] = int(entry.get("messages", 0))
+            extra["rank"] = ranked.index(str(m.id)) + 1 if str(m.id) in ranked else None
+    invites = bot.get_cog("Invites") if bot else None
+    if invites is not None:
+        g = invites.data.get(str(guild.id), {})
+        info = g.get("members", {}).get(str(m.id)) or {}
+        if info.get("inviter"):
+            inviter = guild.get_member(int(info["inviter"]))
+            extra["invited_by"] = inviter.display_name if inviter else f"ID {info['inviter']}"
+        elif info.get("code"):
+            extra["invited_by"] = f"invite {info['code']}"
+        mine = g.get("inviters", {}).get(str(m.id))
+        if mine:
+            joins = mine.get("joins", 0)
+            extra["invited"] = f"{joins - mine.get('left', 0)} still here ({joins} joined)"
+    flag = flags.get(str(m.id))
+    if flag:
+        when = datetime.fromtimestamp(flag["ts"]).strftime("%Y-%m-%d") if flag.get("ts") else ""
+        extra["flagged"] = f"{flag.get('count', 1)}x" + (f", last {when}" if when else "")
+    voice = getattr(m, "voice", None)
+    if voice and voice.channel:
+        extra["voice"] = voice.channel.name
+    return extra
+
+
 def _member_rows(guild: discord.Guild, q: str) -> list[dict]:
     q = q.strip().lower().lstrip("@")
     if not q:
         return []
     warns = _load_json(WARNINGS_FILE).get(str(guild.id), {})
     modlog = _load_json(DATA_DIR / "modlog.json").get(str(guild.id), {})
+    flags = _load_json(DATA_DIR / "flagged_accounts.json").get(str(guild.id), {})
+    joined = sorted((m for m in guild.members if m.joined_at), key=lambda m: m.joined_at)
+    join_order = {m.id: i + 1 for i, m in enumerate(joined)}
     rows = []
     for m in guild.members:
         if m.bot:
@@ -1199,6 +1255,7 @@ def _member_rows(guild: discord.Guild, q: str) -> list[dict]:
             "warnings": len(warns.get(str(m.id), [])),
             "history": [f"{e.get('timestamp', '')[:10]} {e.get('action')}: {e.get('reason', '')}"[:120]
                         for e in modlog.get(str(m.id), [])[-5:]],
+            "extra": _member_extra(guild, m, flags, join_order),
         })
         if len(rows) >= 25:
             break
@@ -1271,6 +1328,138 @@ async def members_action(request: Request, guild_id: str = Form(...), user_id: s
         return _redirect(back, err=f"Discord refused it: {exc.text or exc}")
     log.info("Panel moderation by %s: %s %s", actor, action, member)
     return _redirect(back, msg=text)
+
+
+# -------- Routes: today at a glance (dashboard) ------------------------------
+
+_ONLINE_CACHE: dict[int, tuple[float, Optional[int]]] = {}
+
+
+async def _online_count(guild: discord.Guild) -> Optional[int]:
+    """Members online (Discord's approximate count - the bot has no presence intent). Cached 60s."""
+    cached = _ONLINE_CACHE.get(guild.id)
+    if cached and time.time() - cached[0] < 60:
+        return cached[1]
+    bot = current_bot()
+    value = None
+    try:
+        full = await bot.fetch_guild(guild.id, with_counts=True)
+        value = full.approximate_presence_count
+    except Exception:
+        value = cached[1] if cached else None
+    _ONLINE_CACHE[guild.id] = (time.time(), value)
+    return value
+
+
+def _count_pending(path: Path, collection: str, status: str, guild_id: int, guild_key: str = "guild") -> int:
+    items = _load_json(path).get(collection, {})
+    return sum(1 for e in items.values() if isinstance(e, dict) and e.get("status") == status
+               and e.get(guild_key, guild_id) == guild_id)
+
+
+async def _overview() -> dict:
+    bot = current_bot()
+    if bot is None or not bot.is_ready() or not bot.guilds:
+        return {"ready": False}
+    guild = bot.guilds[0]
+    tickets = [t for t in _active_tickets() if t["guild_id"] == guild.id]
+    out: dict = {
+        "ready": True,
+        "online": await _online_count(guild),
+        "members": guild.member_count or 0,
+        "in_voice": sum(len(c.members) for c in guild.voice_channels + list(guild.stage_channels)),
+        "tickets": len(tickets),
+        "urgent": sum(1 for t in tickets if t["channel_name"].startswith("\U0001F534")),
+        "pending": {
+            "Ban appeals": _count_pending(DATA_DIR / "appeals.json", "appeals", "pending", guild.id),
+            "Invite requests": _count_pending(DATA_DIR / "invite_requests.json", "requests", "pending", guild.id),
+            "Emoji suggestions": _count_pending(DATA_DIR / "emoji_suggestions.json", "suggestions", "open", guild.id),
+            "Open bugs": _count_pending(DATA_DIR / "bugs.json", "bugs", "open", guild.id),
+        },
+    }
+    try:
+        from cogs.stats import _ACTIVE, today_key
+        day = (_ACTIVE.data if _ACTIVE else _load_json(DATA_DIR / "stats.json")).get("guilds", {}) \
+            .get(str(guild.id), {}).get("days", {}).get(today_key(), {})
+        out["today"] = {"joins": day.get("joins", 0), "leaves": day.get("leaves", 0),
+                        "messages": day.get("messages", 0), "tickets_opened": day.get("tickets_opened", 0)}
+    except Exception:
+        out["today"] = {}
+    from cogs.common import get_setting
+    daily = get_setting("downloads_daily") or {}
+    from cogs.stats import today_key as _today
+    if daily.get("date") == _today():
+        out["downloads"] = {"total": daily.get("last", 0), "today": daily.get("last", 0) - daily.get("start", 0)}
+    try:
+        from cogs.bot_health import errors_since
+        errors = errors_since(86400)
+        last = [{"t": int(t), "where": name.replace("setup-bot.", ""), "msg": msg[:140]}
+                for t, name, msg in errors[-3:][::-1]]
+        out["errors"] = {"count": len(errors), "last": last}
+    except Exception:
+        out["errors"] = {"count": 0, "last": []}
+    return out
+
+
+@app.get("/api/overview")
+async def api_overview(request: Request):
+    if not _is_authed(request):
+        raise HTTPException(401)
+    return await _overview()
+
+
+# -------- Routes: feature switches -------------------------------------------
+
+@app.get("/features", response_class=HTMLResponse)
+async def features_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.common import FEATURES, feature_states
+    states = feature_states()
+    groups: dict[str, list] = {}
+    for key, (group, name, what) in FEATURES.items():
+        groups.setdefault(group, []).append({"key": key, "name": name, "what": what, "on": states[key]})
+    return _page(request, "features.html", groups=groups)
+
+
+@app.post("/features/toggle")
+async def features_toggle(request: Request, key: str = Form(...), on: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from cogs.common import FEATURES, set_feature
+    if key not in FEATURES:
+        return _redirect("/features", err="Unknown feature.")
+    enable = on == "1"
+    set_feature(key, enable)
+    name = FEATURES[key][1]
+    log.info("Feature %s switched %s in the panel by %s", key, "on" if enable else "off", _panel_actor(request).name)
+    return _redirect("/features", msg=f"{name} is now {'on' if enable else 'off'}.")
+
+
+# -------- Routes: panel access log -------------------------------------------
+
+@app.get("/access", response_class=HTMLResponse)
+async def access_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from web.access_log import overview
+    data = overview()
+    fmt = lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?"  # noqa: E731
+    for d in data["devices"]:
+        d["first_s"], d["last_s"] = fmt(d.get("first")), fmt(d.get("last"))
+    for e in data["events"]:
+        e["t_s"] = fmt(e.get("t"))
+    return _page(request, "access.html", devices=data["devices"], events=data["events"][:100])
+
+
+@app.post("/access/forget")
+async def access_forget(request: Request, device: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+    from web.access_log import forget_device
+    if not forget_device(device):
+        return _redirect("/access", err="Device not found.")
+    return _redirect("/access", msg="Device forgotten - if it's used again, you get a new-device DM.")
 
 
 # -------- Routes: command statistics ----------------------------------------

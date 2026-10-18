@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands, tasks
 
+from cogs.common import feature_on
 from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.mc_chat_log")
@@ -65,7 +66,7 @@ class McChatLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_mc_events(self, events, source):
-        if not _config().get("enabled", True):
+        if not _config().get("enabled", True) or not feature_on("mc_chat_log"):
             return
         chats = [e for e in events if getattr(e, "type", "") == "PLAYER_CHAT"]
         if chats:

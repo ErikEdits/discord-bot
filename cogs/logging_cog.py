@@ -12,16 +12,23 @@ Falls back to #mod-logs when a themed channel doesn't exist yet
 
 on_member_join / on_member_remove / on_member_update require the
 Server Members privileged intent enabled in the Discord Developer Portal.
+
+Deleted images: Discord's image links stop working once a message is deleted,
+so posted images are copied to data/image_cache/ (kept a few days, size-capped).
+When such a message is deleted, the log gets the saved images attached.
+Config: SERVER_TEMPLATE["image_backup"].
 """
 
 import logging
+import re
+import time
 from datetime import datetime, timezone
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from cogs.common import is_selftest_name, was_deleted_by_bot
-from server_template import CHANNELS
+from cogs.common import DATA_DIR, feature_on, is_selftest_name, was_deleted_by_bot
+from server_template import CHANNELS, SERVER_TEMPLATE
 
 log = logging.getLogger("setup-bot.logging")
 
@@ -32,6 +39,54 @@ LOG_CHANNEL_KEYS = {
     "server": "server_logs",
     "mod": "mod_logs",
 }
+
+
+IMAGE_DIR = DATA_DIR / "image_cache"
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+
+
+def _image_config() -> dict:
+    return SERVER_TEMPLATE.get("image_backup", {})
+
+
+def _safe_filename(name: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name or "image")[-60:]
+    return name or "image"
+
+
+def cached_images(message_id: int) -> list:
+    if not IMAGE_DIR.exists():
+        return []
+    return sorted(IMAGE_DIR.glob(f"{message_id}_*"))
+
+
+def cleanup_image_cache(now: float | None = None) -> int:
+    """Delete images older than keep_days, then the oldest ones until the folder fits max_total_mb.
+    Returns how many files were deleted."""
+    if not IMAGE_DIR.exists():
+        return 0
+    now = time.time() if now is None else now
+    keep = float(_image_config().get("keep_days", 3)) * 86400
+    budget = int(_image_config().get("max_total_mb", 200)) * 1024 * 1024
+    files = []
+    for path in IMAGE_DIR.iterdir():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        files.append((st.st_mtime, st.st_size, path))
+    files.sort()
+    deleted = 0
+    total = sum(size for _, size, _ in files)
+    for mtime, size, path in files:
+        if now - mtime > keep or total > budget:
+            try:
+                path.unlink()
+                deleted += 1
+                total -= size
+            except OSError:
+                pass
+    return deleted
 
 
 def _get_log_channel(guild: discord.Guild, kind: str = "mod") -> discord.TextChannel | None:
@@ -45,11 +100,12 @@ def _get_log_channel(guild: discord.Guild, kind: str = "mod") -> discord.TextCha
     return channel
 
 
-async def _safe_send(channel: discord.TextChannel | None, *, embed: discord.Embed) -> None:
+async def _safe_send(channel: discord.TextChannel | None, *, embed: discord.Embed,
+                     files: list[discord.File] | None = None) -> None:
     if channel is None:
         return
     try:
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, files=files or [])
     except discord.Forbidden:
         pass
     except Exception:
@@ -91,12 +147,42 @@ def _truncate(text: str, limit: int = 1024) -> str:
 class Logging(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        if _image_config().get("enabled", True):
+            self.image_cleanup_loop.start()
+
+    def cog_unload(self):
+        if self.image_cleanup_loop.is_running():
+            self.image_cleanup_loop.cancel()
+
+    @tasks.loop(hours=1)
+    async def image_cleanup_loop(self):
+        cleanup_image_cache()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Keep a copy of posted images, so they can still be shown in the log if the message is deleted."""
+        if message.guild is None or message.author.bot or not message.attachments:
+            return
+        if not _image_config().get("enabled", True) or not feature_on("image_backup"):
+            return
+        max_bytes = int(_image_config().get("max_file_mb", 8)) * 1024 * 1024
+        IMAGE_DIR.mkdir(exist_ok=True)
+        for i, att in enumerate(message.attachments[:5]):
+            if (att.content_type or "").split(";")[0] not in IMAGE_TYPES or att.size > max_bytes:
+                continue
+            try:
+                await att.save(IMAGE_DIR / f"{message.id}_{i}_{_safe_filename(att.filename)}")
+            except (discord.HTTPException, OSError):
+                log.debug("Could not cache image %s", att.filename)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if message.guild is None or (message.author and message.author.bot):
             return
+        saved = cached_images(message.id)
         if was_deleted_by_bot(message.id):
+            for path in saved:
+                path.unlink(missing_ok=True)
             return
         ch = _get_log_channel(message.guild, "message")
         if ch is None or ch.id == message.channel.id:
@@ -112,10 +198,21 @@ class Logging(commands.Cog):
         if message.attachments:
             embed.add_field(
                 name="Attachments",
-                value=_truncate("\n".join(a.url for a in message.attachments)),
+                value=_truncate("\n".join(a.filename for a in message.attachments)),
                 inline=False,
             )
-        await _safe_send(ch, embed=embed)
+        files = []
+        for path in saved[:10]:
+            name = path.name.split("_", 2)[-1]
+            files.append(discord.File(path, filename=f"{len(files)}_{name}"))
+        if files:
+            embed.set_image(url=f"attachment://{files[0].filename}")
+            embed.set_footer(text=f"{len(files)} saved image{'s' if len(files) != 1 else ''} attached")
+        await _safe_send(ch, embed=embed, files=files)
+        for f in files:
+            f.close()
+        for path in saved:
+            path.unlink(missing_ok=True)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
