@@ -5,6 +5,11 @@ is sent as a DM to all members with the Administrator permission. Errors are
 collected for a few seconds and bundled; the same error is only reported once
 per `min_minutes_between_same_error`.
 
+Short Discord connection hiccups (Discord answers 503, the gateway drops, the bot
+reconnects a second later) are NOT reported - they're Discord's problem and fix
+themselves. Instead, if the bot was really offline for longer than
+`offline_alert_minutes`, the admins get one DM after it's back.
+
     /error-alerts off   stop the DMs for yourself
     /error-alerts on    turn them back on
     /error-alerts test  send yourself a test alert
@@ -36,6 +41,36 @@ def _config() -> dict:
     return SERVER_TEMPLATE.get("error_alerts", {})
 
 
+CONNECTION_ERRORS = ("WSServerHandshakeError", "ClientConnectorError", "ClientConnectionError", "ClientOSError",
+                     "ServerDisconnectedError", "ConnectionClosed", "ConnectionResetError", "GatewayNotFound",
+                     "TimeoutError", "CancelledError", "OSError", "WSServerDisconnectedError")
+
+
+def is_connection_noise(record: logging.LogRecord) -> bool:
+    """Discord connection drops that discord.py handles by reconnecting on its own."""
+    if not record.name.startswith("discord."):
+        return False
+    msg = str(record.msg)
+    if msg.startswith("Attempting a reconnect") or "reconnect" in msg.lower():
+        return True
+    exc = record.exc_info[0].__name__ if record.exc_info and record.exc_info[0] else ""
+    return exc in CONNECTION_ERRORS and record.name in ("discord.client", "discord.gateway", "discord.shard")
+
+
+def offline_embed(since: float, back: float) -> discord.Embed:
+    minutes = max(1, round((back - since) / 60))
+    embed = discord.Embed(
+        title="\U0001F50C The bot was offline",
+        description=f"The connection to Discord was gone for **{minutes} minute{'s' if minutes != 1 else ''}** "
+                    f"(<t:{int(since)}:t> - <t:{int(back)}:t>). It's back now and works normally.\n\n"
+                    "Usually that's a Discord outage or the host restarting - nothing to do. "
+                    "If it happens often, check the hosting panel.",
+        color=0xE67E22,
+        timestamp=datetime.fromtimestamp(back, timezone.utc))
+    embed.set_footer(text="Short reconnects (a few seconds) are not reported.")
+    return embed
+
+
 class _AlertHandler(logging.Handler):
     def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
         super().__init__(level=logging.ERROR)
@@ -46,6 +81,8 @@ class _AlertHandler(logging.Handler):
         if record.name.startswith("setup-bot.error_alerts"):
             return  # never alert about alerting
         if not (record.name.startswith("setup-bot") or record.name.startswith("discord")):
+            return
+        if is_connection_noise(record):
             return
         try:
             tb = "".join(traceback.format_exception(*record.exc_info)) if record.exc_info else ""
@@ -69,6 +106,7 @@ class ErrorAlerts(commands.Cog):
         self.sent_times: list[float] = []
         self.handler: _AlertHandler | None = None
         self.worker: asyncio.Task | None = None
+        self.offline_since: float | None = None
 
     async def cog_load(self):
         if not _config().get("enabled", True):
@@ -82,6 +120,38 @@ class ErrorAlerts(commands.Cog):
             logging.getLogger().removeHandler(self.handler)
         if self.worker:
             self.worker.cancel()
+
+    # -------- Real outages (instead of every reconnect) ---------------------
+
+    @commands.Cog.listener()
+    async def on_disconnect(self):
+        if self.offline_since is None:
+            self.offline_since = time.time()
+
+    @commands.Cog.listener()
+    async def on_resumed(self):
+        await self._back_online()
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self._back_online()
+
+    async def _back_online(self) -> None:
+        since, self.offline_since = self.offline_since, None
+        if since is None or not _config().get("enabled", True):
+            return
+        minutes = (time.time() - since) / 60
+        if minutes < float(_config().get("offline_alert_minutes", 5)):
+            return
+        log.info("Bot was offline for %.0f minutes", minutes)
+        embed = offline_embed(since, time.time())
+        from cogs.push import safe_notify
+        safe_notify("error", "\U0001F50C Bot was offline", f"for {minutes:.0f} minutes - it's back now", "/logs")
+        for member in self._recipients():
+            try:
+                await member.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
     def _recipients(self) -> list[discord.Member]:
         optout = set(get_setting(OPTOUT_KEY) or [])

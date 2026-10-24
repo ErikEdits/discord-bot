@@ -920,6 +920,9 @@ SERVER_TEMPLATE = {
     "error_alerts": {
         "enabled": True,
         "min_minutes_between_same_error": 30,
+        # Short Discord reconnects aren't reported. If the bot was offline longer than this,
+        # admins get one DM when it's back.
+        "offline_alert_minutes": 5,
     },
 
     # Automatic backups of the bot data (warnings, levels, FAQs, ...) and the server

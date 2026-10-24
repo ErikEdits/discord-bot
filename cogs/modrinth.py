@@ -5,6 +5,11 @@ new versions to a dedicated channel. State (last seen version per project)
 is persisted to data/modrinth.json so restarts don't re-announce, and releases
 published while the bot was offline are announced after the next start.
 
+One release uploaded as several files (one per loader / Minecraft version, e.g.
+"neoforge-26.1.2-0.4.1", "plugin-1.21-0.4.1") is posted ONCE, with all variants
+listed. Variants that show up a bit later (next poll, within GROUP_HOURS) are
+added to that post by editing it instead of posting again.
+
 Config in SERVER_TEMPLATE['modrinth']:
     enabled         bool
     username        str  - Modrinth username to watch (e.g. "ErikEdits")
@@ -51,8 +56,16 @@ LOADER_EMOJI = {
     "minecraft": "\U0001F9F1",  # brick (resource pack / default)
 }
 
-# Max. releases per project announced after downtime (oldest first).
-MAX_CATCH_UP_PER_PROJECT = 5
+# Max. new version files per project picked up in one poll (after downtime), oldest first.
+MAX_CATCH_UP_PER_PROJECT = 20
+# Max. separate release posts per project in one poll.
+MAX_GROUPS_PER_PROJECT = 5
+# Variants of a release uploaded this long after the first post are added to it (edit).
+GROUP_HOURS = 12
+
+# Words in version numbers that name a loader / platform, not the mod version.
+PLATFORM_WORDS = {"fabric", "forge", "neoforge", "quilt", "plugin", "paper", "spigot", "bukkit", "purpur",
+                  "folia", "velocity", "bungeecord", "waterfall", "sponge", "datapack", "mc", "minecraft"}
 
 VERSION_TYPE_COLOR = {
     "release": 0x2ECC71,
@@ -65,16 +78,72 @@ def _config() -> dict:
     return SERVER_TEMPLATE.get("modrinth", {})
 
 
+def core_version(version: dict) -> str:
+    """The mod version without loader and Minecraft version: "neoforge-26.1.2-0.4.1" -> "0.4.1",
+    "1.1.0-26.1.1" -> "1.1.0". Falls back to the full version number."""
+    number = str(version.get("version_number") or "")
+    game_versions = {str(g).lower() for g in version.get("game_versions") or []}
+    loaders = {str(x).lower() for x in version.get("loaders") or []}
+    keep = []
+    for token in re.split(r"[-+_ ]+", number):
+        low = token.lower()
+        if not low or low in PLATFORM_WORDS or low in loaders:
+            continue
+        mc = low.removeprefix("mc").removesuffix(".x")
+        if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", mc) and \
+                any(g == mc or g.startswith(mc + ".") for g in game_versions):
+            continue
+        keep.append(token)
+    return "-".join(keep) or number
+
+
+def group_versions(versions: list[dict]) -> list[list[dict]]:
+    """Versions of one project -> groups of variants of the same release (order kept)."""
+    groups: dict[str, list[dict]] = {}
+    for v in versions:
+        groups.setdefault(core_version(v), []).append(v)
+    return list(groups.values())
+
+
+def _slim(version: dict) -> dict:
+    """What's needed to redraw a release post later (kept in data/modrinth.json for GROUP_HOURS)."""
+    files = version.get("files") or []
+    out = {k: version.get(k) for k in ("id", "version_number", "version_type", "loaders", "game_versions",
+                                       "date_published")}
+    out["changelog"] = (version.get("changelog") or "")[:1000]
+    if files:
+        out["files"] = [{k: files[0].get(k) for k in ("url", "filename", "size")}]
+    return out
+
+
+def merge_variants(variants: list[dict]) -> dict:
+    """One version-like dict for a release with several variants (used by the embed and other cogs)."""
+    first = variants[0]
+    if len(variants) == 1:
+        return first
+    loaders, games = [], []
+    for v in variants:
+        loaders += [x for x in v.get("loaders") or [] if x not in loaders]
+        games += [g for g in v.get("game_versions") or [] if g not in games]
+    types = [v.get("version_type", "release") for v in variants]
+    merged = dict(first)
+    merged.update(version_number=core_version(first), loaders=loaders, game_versions=games,
+                  version_type="alpha" if "alpha" in types else "beta" if "beta" in types else "release",
+                  _variants=variants)
+    return merged
+
+
 def _load_state() -> dict:
     if not STATE_FILE.exists():
-        return {"projects": {}}
+        return {"projects": {}, "groups": {}}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         data.setdefault("projects", {})
+        data.setdefault("groups", {})
         return data
     except Exception:
         log.exception("Failed to read modrinth state")
-        return {"projects": {}}
+        return {"projects": {}, "groups": {}}
 
 
 def _save_state(data: dict) -> None:
@@ -112,16 +181,16 @@ def _format_version_embed(project: dict, version: dict) -> discord.Embed:
     loaders = version.get("loaders") or project.get("loaders") or []
     loader_str = " ".join(f"{LOADER_EMOJI.get(l, '')} {l}".strip() for l in loaders) or "—"
     game_versions = version.get("game_versions") or []
-    if len(game_versions) > 8:
-        game_str = f"{', '.join(game_versions[:4])} … {', '.join(game_versions[-2:])}"
-    else:
-        game_str = ", ".join(game_versions) or "—"
+    game_str = _game_str(game_versions)
 
     files = version.get("files") or []
     download_url = files[0]["url"] if files else None
 
     title = f"{project.get('title', 'Unknown')} {version.get('version_number', '')}"
     page_url = f"https://modrinth.com/{project.get('project_type', 'mod')}/{project.get('slug')}/version/{version.get('id')}"
+    variants = version.get("_variants") or []
+    if len(variants) > 1:
+        page_url = f"https://modrinth.com/{project.get('project_type', 'mod')}/{project.get('slug')}/versions"
 
     embed = discord.Embed(
         title=title,
@@ -138,11 +207,34 @@ def _format_version_embed(project: dict, version: dict) -> discord.Embed:
     changelog = (version.get("changelog") or "").strip()
     if changelog:
         embed.add_field(name="Changelog", value=changelog[:900] + ("…" if len(changelog) > 900 else ""), inline=False)
-    if download_url:
+    if len(variants) > 1:
+        lines = []
+        for v in variants[:10]:
+            vfiles = v.get("files") or []
+            emojis = " ".join(LOADER_EMOJI.get(x, "") for x in v.get("loaders") or []).strip()
+            what = f"{emojis} {'/'.join(v.get('loaders') or [])} {_game_str(v.get('game_versions') or [], 3)}".strip()
+            link = f"[{vfiles[0]['filename']}]({vfiles[0]['url']})" if vfiles else v.get("version_number", "")
+            lines.append(f"{what} - {link}")
+        if len(variants) > 10:
+            lines.append(f"... and {len(variants) - 10} more on Modrinth")
+        text = ""
+        for line in lines:
+            if len(text) + len(line) > 1000:
+                text += "... more on Modrinth"
+                break
+            text += line + "\n"
+        embed.add_field(name=f"Downloads ({len(variants)} files)", value=text.strip(), inline=False)
+    elif download_url:
         size_kb = files[0].get("size", 0) // 1024
         embed.add_field(name="Download", value=f"[{files[0]['filename']}]({download_url}) ({size_kb} KB)", inline=False)
     embed.set_footer(text=f"Modrinth · {project.get('downloads', 0)} total downloads")
     return embed
+
+
+def _game_str(game_versions: list, limit: int = 8) -> str:
+    if len(game_versions) > limit:
+        return f"{', '.join(game_versions[:max(1, limit // 2)])} … {', '.join(game_versions[-2:])}"
+    return ", ".join(game_versions) or "—"
 
 
 async def _fetch_user_projects(username: str) -> list | None:
@@ -470,7 +562,7 @@ class Modrinth(commands.Cog):
             if not projects:
                 return
 
-            new_versions: list[tuple[dict, dict]] = []
+            new_versions: list[tuple[dict, list[dict]]] = []   # (project, variants of one release)
             for project in projects:
                 pid = project.get("id")
                 if not pid:
@@ -483,9 +575,11 @@ class Modrinth(commands.Cog):
                 seen = state["projects"].get(pid)
 
                 if seen is None:
-                    # A project we've never seen: announce only its newest version.
+                    # A project we've never seen: announce only its newest release (all its variants).
                     if initialized:
-                        new_versions.append((project, latest))
+                        newest = core_version(latest)
+                        same = [v for v in versions[:MAX_CATCH_UP_PER_PROJECT] if core_version(v) == newest]
+                        new_versions.append((project, list(reversed(same))))
                 else:
                     last_id = seen.get("last_version_id")
                     last_published = seen.get("last_published") or ""
@@ -494,8 +588,9 @@ class Modrinth(commands.Cog):
                         if v.get("id") != last_id and v.get("date_published", "") > last_published
                     ]
                     # Oldest first, and cap it so a long outage doesn't spam the channel.
-                    for v in reversed(missed[:MAX_CATCH_UP_PER_PROJECT]):
-                        new_versions.append((project, v))
+                    groups = group_versions(list(reversed(missed[:MAX_CATCH_UP_PER_PROJECT])))
+                    for variants in groups[-MAX_GROUPS_PER_PROJECT:]:
+                        new_versions.append((project, variants))
 
                 state["projects"][pid] = {
                     "last_version_id": latest.get("id"),
@@ -503,6 +598,8 @@ class Modrinth(commands.Cog):
                     "last_published": latest.get("date_published"),
                 }
 
+            now = time.time()
+            state["groups"] = {k: g for k, g in state["groups"].items() if now - g.get("ts", 0) < GROUP_HOURS * 3600}
             _save_state(state)
 
         if not initialized:
@@ -512,41 +609,74 @@ class Modrinth(commands.Cog):
         if not new_versions:
             return
 
-        for guild in self.bot.guilds:
-            channel = discord.utils.get(guild.text_channels, name=channel_name)
-            if channel is None:
+        # Variants of a release posted earlier (e.g. the NeoForge file came 20 minutes after the
+        # Fabric one) are added to that post instead of making a new one.
+        fresh: list[tuple[dict, list[dict]]] = []
+        for project, variants in new_versions:
+            key = f"{project.get('id')}:{core_version(variants[0])}"
+            group = state["groups"].get(key)
+            if group is None:
+                fresh.append((project, variants))
                 continue
-            mention = ""
-            role_name = cfg.get("mention_role")
-            if role_name:
-                role = discord.utils.get(guild.roles, name=role_name)
-                if role:
-                    mention = role.mention
-            for project, version in new_versions:
+            known = {v.get("id") for v in group["variants"]}
+            group["variants"] += [_slim(v) for v in variants if v.get("id") not in known]
+            await self._edit_posts(project, group)
+        _save_state(state)
+
+        for project, variants in fresh:
+            group = {"ts": time.time(), "variants": [_slim(v) for v in variants], "messages": []}
+            embed = _format_version_embed(project, merge_variants(variants))
+            for guild in self.bot.guilds:
+                channel = discord.utils.get(guild.text_channels, name=channel_name)
+                if channel is None:
+                    continue
+                mention = ""
+                role_name = cfg.get("mention_role")
+                if role_name:
+                    role = discord.utils.get(guild.roles, name=role_name)
+                    if role:
+                        mention = role.mention
                 try:
-                    embed = _format_version_embed(project, version)
-                    await channel.send(
+                    msg = await channel.send(
                         content=mention or None,
                         embed=embed,
                         allowed_mentions=discord.AllowedMentions(roles=True),
                     )
-                    log.info("Posted Modrinth release: %s %s", project.get("title"), version.get("version_number"))
+                    group["messages"].append([channel.id, msg.id])
+                    log.info("Posted Modrinth release: %s %s (%d file(s))", project.get("title"),
+                             core_version(variants[0]), len(variants))
                 except discord.Forbidden:
                     log.warning("Cannot post in #%s (missing permission)", channel.name)
                 except Exception:
                     log.exception("Failed to post Modrinth release")
+            state["groups"][f"{project.get('id')}:{core_version(variants[0])}"] = group
+        _save_state(state)
 
-        # Other cogs react to new versions: follower DMs (mod_follow), beta feedback (beta_feedback).
-        for project, version in new_versions:
-            self.bot.dispatch("mod_release", project, version)
+        # Other cogs react to new releases (once per release, not per file): follower DMs (mod_follow),
+        # beta feedback (beta_feedback).
+        for project, variants in fresh:
+            self.bot.dispatch("mod_release", project, merge_variants(variants))
 
         # Follow-ups: feedback poll a few days later + refresh the compatibility table.
         try:
             from cogs.mod_info import schedule_release_feedback
-            for project, version in new_versions:
-                schedule_release_feedback(project, version)
+            for project, variants in fresh:
+                schedule_release_feedback(project, merge_variants(variants))
         except Exception:
             log.exception("Failed to schedule release follow-ups")
+
+    async def _edit_posts(self, project: dict, group: dict) -> None:
+        embed = _format_version_embed(project, merge_variants(group["variants"]))
+        for channel_id, message_id in group.get("messages", []):
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                await channel.get_partial_message(message_id).edit(embed=embed)
+                log.info("Added late files to the release post of %s %s (%d file(s) now)", project.get("title"),
+                         core_version(group["variants"][0]), len(group["variants"]))
+            except discord.HTTPException:
+                log.warning("Could not update the release post %s", message_id)
 
     @poll_loop.before_loop
     async def _before(self):

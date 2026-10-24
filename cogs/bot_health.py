@@ -31,6 +31,9 @@ class _ErrorCounter(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            from cogs.error_alerts import is_connection_noise
+            if is_connection_noise(record):
+                return   # Discord reconnects aren't bot errors
             ERRORS.append((record.created, record.name, record.getMessage()[:200]))
         except Exception:
             pass
