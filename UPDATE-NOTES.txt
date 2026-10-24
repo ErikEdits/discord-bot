@@ -1,4 +1,21 @@
 ============================================================
+ BOT UPDATE 24 - weniger Spam
+============================================================
+
+  Release-Posts    Eine Mod-Version mit mehreren Dateien (z.B. JustQuests 0.4.1 fuer
+                   NeoForge 26.1.2, NeoForge 26.2, Paper 1.19 ...) kommt jetzt als
+                   EIN Post mit allen Dateien. Kommen Dateien etwas spaeter dazu,
+                   wird der Post bearbeitet statt neu gepostet. Auch /follow-DMs,
+                   Beta-Feedback und die Feedback-Umfrage kommen nur einmal pro Version.
+  Fehler-DMs       Kurze Verbindungsabbrueche zu Discord (z.B. "503") schicken keine
+                   Fehler-DM mehr - der Bot verbindet sich da sowieso sofort neu.
+                   War der Bot wirklich laenger als 5 Minuten offline, bekommst du
+                   EINE DM, sobald er wieder da ist.
+
+NACH DEM UPDATE
+  /bot-update-check, dann zweimal /bot-restart.
+
+============================================================
  BOT UPDATE 23 - 15 kleine Verbesserungen
 ============================================================
 
